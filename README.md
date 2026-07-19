@@ -1,6 +1,7 @@
 # pi-kimi-video
 
 [![CI](https://github.com/Gucvii/pi-kimi-video/actions/workflows/ci.yml/badge.svg)](https://github.com/Gucvii/pi-kimi-video/actions/workflows/ci.yml)
+
 [简体中文](README.zh-CN.md) · [Latest release: v0.6.1](https://github.com/Gucvii/pi-kimi-video/releases/tag/v0.6.1)
 
 ## Demo
