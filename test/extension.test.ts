@@ -8,7 +8,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import kimiVideoExtension from "../extensions/index.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
-type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void> | void;
+type InputHandler = (
+  event: { text: string; images?: unknown[]; source: string },
+  ctx: ExtensionContext,
+) => Promise<{ action: string; text?: string; images?: unknown[] }>;
 type ProviderRequestHandler = (
   event: { type: "before_provider_request"; payload: unknown },
   ctx: ExtensionContext,
@@ -38,16 +41,16 @@ async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-test("extension uploads, persists a custom message, and rewrites by selected model", async () => {
-  const commands = new Map<string, CommandHandler>();
+test("extension turns a normal video attachment into persisted Kimi context", async () => {
+  let inputHandler: InputHandler | undefined;
   let providerRequestHandler: ProviderRequestHandler | undefined;
   const sent: SentMessage[] = [];
 
   const pi = {
     registerMessageRenderer: () => {},
-    registerCommand: (name: string, options: { handler: CommandHandler }) => commands.set(name, options.handler),
-    on: (event: string, handler: ProviderRequestHandler) => {
-      if (event === "before_provider_request") providerRequestHandler = handler;
+    on: (event: string, handler: InputHandler | ProviderRequestHandler) => {
+      if (event === "input") inputHandler = handler as InputHandler;
+      if (event === "before_provider_request") providerRequestHandler = handler as ProviderRequestHandler;
     },
     sendMessage: (message: SentMessage["message"], options?: SentMessage["options"]) => {
       sent.push(options ? { message, options } : { message });
@@ -60,7 +63,7 @@ test("extension uploads, persists a custom message, and rewrites by selected mod
     response.end(JSON.stringify({ id: "file-extension-test" }));
   });
   const directory = await mkdtemp(join(tmpdir(), "pi-kimi-video-extension-"));
-  const videoPath = join(directory, "demo.mp4");
+  const videoPath = join(directory, "demo clip.mp4");
   await writeFile(videoPath, "small fake video payload");
   const port = await listen(server);
   const model: ModelIdentity = {
@@ -71,6 +74,7 @@ test("extension uploads, persists a custom message, and rewrites by selected mod
   };
   let branch: Array<{ type: string; customType: string; details: VideoAsset }> = [];
   const notifications: Array<{ message: string; level: string }> = [];
+  const statuses: Array<string | undefined> = [];
   const context = {
     cwd: directory,
     model,
@@ -84,20 +88,30 @@ test("extension uploads, persists a custom message, and rewrites by selected mod
     },
     ui: {
       notify: (message: string, level: string) => notifications.push({ message, level }),
+      setStatus: (_key: string, value: string | undefined) => statuses.push(value),
     },
   } as unknown as ExtensionContext;
 
   try {
-    const videoCommand = commands.get("video");
-    assert.ok(videoCommand);
-    await videoCommand("demo.mp4 Explain the visible behavior.", context);
+    assert.ok(inputHandler);
+    const image = { type: "image", data: "base64-image", mimeType: "image/png" };
+    const result = await inputHandler(
+      { text: '@"demo clip.mp4" Explain the visible behavior.', images: [image], source: "interactive" },
+      context,
+    );
+    assert.deepEqual(result, {
+      action: "transform",
+      text: "Explain the visible behavior.",
+      images: [image],
+    });
     assert.deepEqual(notifications, []);
+    assert.equal(statuses.at(-1), undefined);
     assert.equal(sent.length, 1);
     const first = sent[0];
     assert.ok(first);
     assert.equal(first.message.customType, "kimi-video");
     assert.equal(first.message.display, true);
-    assert.equal(first.options?.triggerTurn, true);
+    assert.equal(first.options, undefined);
     assert.equal(typeof first.message.content, "string");
     const asset = first.message.details as VideoAsset;
     assert.equal(asset.msUri, "ms://file-extension-test");

@@ -1,20 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Image, Text } from "@earendil-works/pi-tui";
-import { inspectVideo, sha256File, uploadVideo } from "../src/io.ts";
+import { findVideoAttachment, inspectVideo, sha256File, uploadVideo } from "../src/io.ts";
 import {
   assetsFromBranch,
-  findAssetByMarker,
   findReusableAsset,
   formatBytes,
   isDirectKimi,
-  markerId,
   parseMaxBytes,
-  parseRecallArgs,
   parseTimeoutMs,
-  parseVideoArgs,
   rewriteChatCompletionsPayload,
   sanitizeTerminalText,
   singleLineTerminalText,
@@ -29,136 +25,157 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       const content = typeof message.content === "string" ? sanitizeTerminalText(message.content) : "Kimi video";
       return new Text(content, 0, 0);
     }
+
     const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-    const dimensions = typeof asset.width === "number" && typeof asset.height === "number" ? `${asset.width}×${asset.height}` : "unknown";
+    const dimensions = typeof asset.width === "number" && typeof asset.height === "number"
+      ? `${asset.width}×${asset.height}`
+      : "unknown";
     const duration = typeof asset.duration === "number" ? formatDuration(asset.duration) : "unknown";
     const fileName = sanitizeTerminalText(asset.fileName);
-    const msUri = sanitizeTerminalText(asset.msUri);
-    const marker = sanitizeTerminalText(asset.marker);
-    const prompt = sanitizeTerminalText(asset.prompt);
-    const compact = `${theme.fg("accent", "Kimi video")} ${theme.bold(fileName)} · ${formatBytes(asset.size)} · ${duration} · ${dimensions}`;
-    box.addChild(new Text(expanded
-      ? `${compact}\n${theme.fg("dim", `URI: ${msUri}`)}\n${theme.fg("dim", `Marker: ${marker}`)}\nPrompt: ${prompt}`
-      : `${compact}\n${theme.fg("dim", msUri)}\n${prompt}`, 0, 0));
-    if (expanded && asset.thumbnailBase64) {
-      box.addChild(new Image(asset.thumbnailBase64, "image/jpeg", { fallbackColor: (text) => theme.fg("dim", text) }, {
-        maxWidthCells: 72,
-        maxHeightCells: 18,
-        filename: `${singleLineTerminalText(asset.fileName)}.jpg`,
-      }));
+    const localPath = sanitizeTerminalText(asset.localPath);
+    const summary = `${theme.fg("accent", "Video")} ${theme.bold(fileName)} · ${formatBytes(asset.size)} · ${duration} · ${dimensions}`;
+    box.addChild(new Text(
+      expanded ? `${summary}\n${theme.fg("dim", localPath)}` : summary,
+      0,
+      0,
+    ));
+
+    if (asset.thumbnailBase64) {
+      box.addChild(new Image(
+        asset.thumbnailBase64,
+        "image/jpeg",
+        { fallbackColor: (text) => theme.fg("dim", text) },
+        {
+          maxWidthCells: expanded ? 72 : 56,
+          maxHeightCells: expanded ? 18 : 12,
+          filename: `${singleLineTerminalText(asset.fileName)}.jpg`,
+        },
+      ));
     }
     return box;
   });
 
-  pi.registerCommand("video", {
-    description: "Upload a video to direct Moonshot Kimi K3: /video <path> [prompt]",
-    handler: async (args, ctx) => {
-      let operationSignal: AbortSignal | undefined;
-      let timeoutMs: number | undefined;
-      try {
-        if (!ctx.isIdle()) throw new Error("The agent must be idle before uploading a video.");
-        if (!ctx.model || !isDirectKimi(ctx.model)) {
-          throw new Error("/video requires the direct moonshotai or moonshotai-cn kimi-k3 model (OpenAI Chat Completions). Switch models first.");
-        }
-        timeoutMs = parseTimeoutMs(process.env.PI_KIMI_VIDEO_TIMEOUT_MS);
-        const timeoutSignal = AbortSignal.timeout(timeoutMs);
-        operationSignal = ctx.signal ? AbortSignal.any([ctx.signal, timeoutSignal]) : timeoutSignal;
-        const parsed = parseVideoArgs(args);
-        const localPath = resolve(ctx.cwd, parsed.path);
-        const fileStat = await stat(localPath).catch((error: unknown) => {
-          throw new Error(`Cannot read video file "${localPath}": ${errorMessage(error)}`);
-        });
-        if (!fileStat.isFile()) throw new Error(`Video path is not a regular file: ${localPath}`);
-        const mimeType = validateVideoFile(localPath, fileStat.size, parseMaxBytes(process.env.PI_KIMI_VIDEO_MAX_BYTES));
-        const hash = await sha256File(localPath, operationSignal);
-        const branchAssets = getAssets(ctx);
-        const reusable = findReusableAsset(branchAssets, ctx.model.provider, ctx.model.baseUrl, hash);
+  pi.on("input", async (event, ctx) => {
+    if (event.source === "extension") return { action: "continue" as const };
 
-        let uploaded: { fileId: string; msUri: string };
-        let media: Awaited<ReturnType<typeof inspectVideo>>;
-        if (reusable) {
-          uploaded = { fileId: reusable.fileId, msUri: reusable.msUri };
-          media = {
-            ...(reusable.duration !== null ? { duration: reusable.duration } : {}),
-            ...(reusable.width !== null ? { width: reusable.width } : {}),
-            ...(reusable.height !== null ? { height: reusable.height } : {}),
-          };
-          ctx.ui.notify(`Reusing active-branch upload ${singleLineTerminalText(reusable.msUri)}`, "info");
-        } else {
-          const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-          if (!auth.ok) throw new Error(`Moonshot authentication unavailable: ${auth.error}`);
-          if (!auth.apiKey && !hasAuthorization(auth.headers)) {
-            throw new Error("Moonshot authentication unavailable. Set MOONSHOT_API_KEY and select the model again.");
-          }
-          const headers: Record<string, string> = { ...(auth.headers ?? {}) };
-          if (auth.apiKey && !hasAuthorization(headers)) headers.Authorization = `Bearer ${auth.apiKey}`;
-          [uploaded, media] = await Promise.all([
-            uploadVideo(localPath, mimeType, ctx.model.baseUrl, headers, operationSignal),
-            inspectVideo(localPath, operationSignal),
-          ]);
-        }
+    let attachment: Awaited<ReturnType<typeof findVideoAttachment>>;
+    try {
+      attachment = await findVideoAttachment(event.text, ctx.cwd);
+    } catch (error) {
+      ctx.ui.notify(sanitizeTerminalText(errorMessage(error)), "error");
+      return { action: "handled" as const };
+    }
+    if (!attachment) return { action: "continue" as const };
 
-        const marker = `[[pi-kimi-video:v1:${randomUUID()}]]`;
-        const asset: VideoAsset = {
-          marker,
-          version: "v1",
-          fileId: uploaded.fileId,
-          msUri: uploaded.msUri,
-          provider: ctx.model.provider === "moonshotai-cn" ? "moonshotai-cn" : "moonshotai",
-          baseUrl: ctx.model.baseUrl,
-          fileName: basename(localPath),
-          localPath,
-          hash,
-          mimeType,
-          size: fileStat.size,
-          duration: media.duration ?? null,
-          width: media.width ?? null,
-          height: media.height ?? null,
-          thumbnailBase64: media.thumbnailBase64 ?? null,
-          prompt: parsed.prompt,
-          createdAt: new Date().toISOString(),
-        };
-        pi.sendMessage({ customType: CUSTOM_TYPE, content: `${marker}\n${parsed.prompt}`, display: true, details: asset }, { triggerTurn: true });
-      } catch (error) {
-        ctx.ui.notify(sanitizeTerminalText(operationErrorMessage(error, operationSignal, timeoutMs)), "error");
-      }
-    },
-  });
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Wait for the current turn to finish, then send the video again.", "warning");
+      return { action: "handled" as const };
+    }
+    if (!ctx.model || !isDirectKimi(ctx.model)) {
+      ctx.ui.notify(
+        "Video input requires moonshotai/kimi-k3 or moonshotai-cn/kimi-k3. Configure Moonshot with /login, then select Kimi K3 with /model.",
+        "warning",
+      );
+      return { action: "handled" as const };
+    }
 
-  pi.registerCommand("video-list", {
-    description: "List Kimi video assets on the active branch",
-    handler: async (_args, ctx) => {
-      const assets = getAssets(ctx);
-      if (assets.length === 0) {
-        ctx.ui.notify("No Kimi videos are present on the active branch.", "info");
-        return;
-      }
-      ctx.ui.notify(assets.map((asset) =>
-        singleLineTerminalText(`${markerId(asset.marker).slice(0, 12)}  ${asset.fileName}  ${formatBytes(asset.size)}  ${asset.msUri}`),
-      ).join("\n"), "info");
-    },
-  });
-
-  pi.registerCommand("video-recall", {
-    description: "Recall an active-branch video without uploading it again",
-    handler: async (args, ctx) => {
-      try {
-        if (!ctx.isIdle()) throw new Error("The agent must be idle before recalling a video.");
-        const parsed = parseRecallArgs(args);
-        const original = findAssetByMarker(getAssets(ctx), parsed.id);
-        const prompt = parsed.prompt || original.prompt;
-        const marker = `[[pi-kimi-video:v1:${randomUUID()}]]`;
-        const asset: VideoAsset = { ...original, marker, prompt, thumbnailBase64: null, createdAt: new Date().toISOString() };
-        pi.sendMessage({ customType: CUSTOM_TYPE, content: `${marker}\n${prompt}`, display: true, details: asset }, { triggerTurn: true });
-      } catch (error) {
-        ctx.ui.notify(sanitizeTerminalText(errorMessage(error)), "error");
-      }
-    },
+    ctx.ui.setStatus("kimi-video", `Uploading ${singleLineTerminalText(basename(attachment.localPath))}…`);
+    let operationSignal: AbortSignal | undefined;
+    let timeoutMs: number | undefined;
+    try {
+      timeoutMs = parseTimeoutMs(process.env.PI_KIMI_VIDEO_TIMEOUT_MS);
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      operationSignal = ctx.signal ? AbortSignal.any([ctx.signal, timeoutSignal]) : timeoutSignal;
+      const asset = await prepareAsset(
+        attachment.localPath,
+        attachment.prompt,
+        ctx,
+        operationSignal,
+      );
+      const markerText = `${asset.marker}\nAttached video: ${asset.fileName}`;
+      pi.sendMessage({
+        customType: CUSTOM_TYPE,
+        content: markerText,
+        display: true,
+        details: asset,
+      });
+      return event.images
+        ? { action: "transform" as const, text: attachment.prompt, images: event.images }
+        : { action: "transform" as const, text: attachment.prompt };
+    } catch (error) {
+      ctx.ui.notify(sanitizeTerminalText(operationErrorMessage(error, operationSignal, timeoutMs)), "error");
+      return { action: "handled" as const };
+    } finally {
+      ctx.ui.setStatus("kimi-video", undefined);
+    }
   });
 
   pi.on("before_provider_request", (event, ctx) =>
     rewriteChatCompletionsPayload(event.payload, getAssets(ctx), ctx.model),
   );
+}
+
+async function prepareAsset(
+  localPath: string,
+  prompt: string,
+  ctx: ExtensionContext,
+  signal: AbortSignal,
+): Promise<VideoAsset> {
+  if (!ctx.model || !isDirectKimi(ctx.model)) {
+    throw new Error("The selected model is no longer a supported direct Kimi K3 endpoint.");
+  }
+  const fileStat = await stat(localPath);
+  if (!fileStat.isFile()) throw new Error(`Video path is not a regular file: ${localPath}`);
+  const mimeType = validateVideoFile(
+    localPath,
+    fileStat.size,
+    parseMaxBytes(process.env.PI_KIMI_VIDEO_MAX_BYTES),
+  );
+  const hash = await sha256File(localPath, signal);
+  const reusable = findReusableAsset(getAssets(ctx), ctx.model.provider, ctx.model.baseUrl, hash);
+
+  let uploaded: { fileId: string; msUri: string };
+  let media: Awaited<ReturnType<typeof inspectVideo>>;
+  if (reusable) {
+    uploaded = { fileId: reusable.fileId, msUri: reusable.msUri };
+    media = {
+      ...(reusable.duration !== null ? { duration: reusable.duration } : {}),
+      ...(reusable.width !== null ? { width: reusable.width } : {}),
+      ...(reusable.height !== null ? { height: reusable.height } : {}),
+    };
+  } else {
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    if (!auth.ok) throw new Error(`Moonshot authentication unavailable: ${auth.error}`);
+    if (!auth.apiKey && !hasAuthorization(auth.headers)) {
+      throw new Error(`Moonshot authentication is missing. Run /login ${ctx.model.provider} and try again.`);
+    }
+    const headers: Record<string, string> = { ...(auth.headers ?? {}) };
+    if (auth.apiKey && !hasAuthorization(headers)) headers.Authorization = `Bearer ${auth.apiKey}`;
+    [uploaded, media] = await Promise.all([
+      uploadVideo(localPath, mimeType, ctx.model.baseUrl, headers, signal),
+      inspectVideo(localPath, signal),
+    ]);
+  }
+
+  return {
+    marker: `[[pi-kimi-video:v1:${randomUUID()}]]`,
+    version: "v1",
+    fileId: uploaded.fileId,
+    msUri: uploaded.msUri,
+    provider: ctx.model.provider === "moonshotai-cn" ? "moonshotai-cn" : "moonshotai",
+    baseUrl: ctx.model.baseUrl,
+    fileName: basename(localPath),
+    localPath,
+    hash,
+    mimeType,
+    size: fileStat.size,
+    duration: media.duration ?? null,
+    width: media.width ?? null,
+    height: media.height ?? null,
+    thumbnailBase64: media.thumbnailBase64 ?? null,
+    prompt,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 function getAssets(ctx: ExtensionContext): VideoAsset[] {
@@ -174,13 +191,15 @@ function errorMessage(error: unknown): string {
 }
 
 function operationErrorMessage(
-  error: unknown, signal: AbortSignal | undefined, timeoutMs: number | undefined,
+  error: unknown,
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
 ): string {
   if (hasErrorName(signal?.reason, "TimeoutError") || hasErrorName(error, "TimeoutError")) {
-    return `Video operation timed out after ${timeoutMs ?? "the configured timeout"} ms. Adjust PI_KIMI_VIDEO_TIMEOUT_MS and try again.`;
+    return `Video upload timed out after ${timeoutMs ?? "the configured timeout"} ms. Adjust PI_KIMI_VIDEO_TIMEOUT_MS and try again.`;
   }
   if (signal?.aborted || hasErrorName(error, "AbortError")) {
-    return "Video operation was aborted before it completed.";
+    return "Video upload was aborted before it completed.";
   }
   return errorMessage(error);
 }

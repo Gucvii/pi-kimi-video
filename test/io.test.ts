@@ -4,7 +4,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { uploadVideo } from "../src/io.ts";
+import { pathToFileURL } from "node:url";
+import { findVideoAttachment, uploadVideo } from "../src/io.ts";
 
 interface CapturedRequest {
   url: string;
@@ -26,6 +27,30 @@ async function listen(server: Server): Promise<number> {
 async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
+
+test("findVideoAttachment resolves drag, @ reference, and file URL input", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-kimi-video-input-"));
+  const path = join(directory, "tiny clip.mp4");
+  const secondPath = join(directory, "second.mov");
+  await Promise.all([writeFile(path, "x"), writeFile(secondPath, "y")]);
+  try {
+    assert.deepEqual(
+      await findVideoAttachment(`Analyze @"${path}" carefully`, directory),
+      { localPath: path, prompt: "Analyze carefully" },
+    );
+    assert.deepEqual(
+      await findVideoAttachment(`${pathToFileURL(path).href} summarize`, directory),
+      { localPath: path, prompt: "summarize" },
+    );
+    assert.equal(await findVideoAttachment("mention missing.mp4 without attaching it", directory), undefined);
+    await assert.rejects(
+      findVideoAttachment(`"${path}" "${secondPath}" compare`, directory),
+      /one video per message/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("uploadVideo sends an authenticated multipart video upload with a FormData boundary", async () => {
   let captured: CapturedRequest | undefined;

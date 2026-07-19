@@ -23,40 +23,77 @@ export function isDirectKimi(model: ModelIdentity | undefined): boolean {
     && (model.api === undefined || model.api === "openai-completions");
 }
 
-export function parseVideoArgs(input: string): { path: string; prompt: string } {
-  let index = 0;
-  while (/\s/.test(input[index] ?? "")) index++;
-  if (index >= input.length) throw new Error("Usage: /video <path> [prompt]");
-
-  let path = "";
-  const quote = input[index] === "\"" || input[index] === "'" ? input[index++] : undefined;
-  if (quote !== undefined) {
-    while (index < input.length && input[index] !== quote) {
-      if (input[index] === "\\" && input[index + 1] === quote) index++;
-      path += input[index++] ?? "";
-    }
-    if (input[index] !== quote) throw new Error("Video path has an unterminated quote.");
-    index++;
-    if (index < input.length && !/\s/.test(input[index] ?? "")) {
-      throw new Error("Expected whitespace after the quoted video path.");
-    }
-  } else {
-    while (index < input.length && !/\s/.test(input[index] ?? "")) {
-      if (input[index] === "\\" && index + 1 < input.length) index++;
-      path += input[index++] ?? "";
-    }
-  }
-  if (!path) throw new Error("Video path cannot be empty.");
-  const prompt = input.slice(index).trim() || DEFAULT_PROMPT;
-  return { path, prompt };
+export interface VideoReferenceCandidate {
+  value: string;
+  start: number;
+  end: number;
 }
 
-export function parseRecallArgs(input: string): { id: string; prompt?: string } {
-  const trimmed = input.trim();
-  if (!trimmed) throw new Error("Usage: /video-recall <marker-id-or-prefix> [prompt]");
-  const match = /^(\S+)(?:\s+([\s\S]+))?$/.exec(trimmed);
-  if (!match?.[1]) throw new Error("Usage: /video-recall <marker-id-or-prefix> [prompt]");
-  return match[2] ? { id: match[1], prompt: match[2].trim() } : { id: match[1] };
+export function videoReferenceCandidates(input: string): VideoReferenceCandidate[] {
+  const candidates: VideoReferenceCandidate[] = [];
+  let index = 0;
+  while (index < input.length) {
+    while (/\s/.test(input[index] ?? "")) index++;
+    if (index >= input.length) break;
+
+    const start = index;
+    let value = "";
+    let quote: "\"" | "'" | undefined;
+    while (index < input.length) {
+      const char = input[index];
+      if (char === undefined) break;
+      if (quote) {
+        if (char === quote) {
+          quote = undefined;
+          index++;
+          continue;
+        }
+        if (char === "\\" && input[index + 1] === quote) {
+          value += quote;
+          index += 2;
+          continue;
+        }
+        value += char;
+        index++;
+        continue;
+      }
+      if (/\s/.test(char)) break;
+      if (char === "\"" || char === "'") {
+        quote = char;
+        index++;
+        continue;
+      }
+      if (char === "\\" && index + 1 < input.length) {
+        const next = input[index + 1] ?? "";
+        if (/\s/.test(next) || next === "\\" || next === "\"" || next === "'") {
+          value += next;
+          index += 2;
+          continue;
+        }
+      }
+      value += char;
+      index++;
+    }
+
+    const pathValue = value.startsWith("@") ? value.slice(1) : value;
+    if (isSupportedVideoPath(pathValue)) {
+      candidates.push({ value: pathValue, start, end: index });
+    }
+  }
+  return candidates;
+}
+
+export function promptWithoutVideoReference(
+  input: string,
+  candidate: VideoReferenceCandidate,
+): string {
+  const before = input.slice(0, candidate.start).trimEnd();
+  const after = input.slice(candidate.end).trimStart();
+  return [before, after].filter(Boolean).join(" ").trim() || DEFAULT_PROMPT;
+}
+
+export function isSupportedVideoPath(value: string): boolean {
+  return EXTENSION_MIME.has(extname(value).toLowerCase());
 }
 
 export function parseMaxBytes(value: string | undefined): number {
@@ -141,19 +178,6 @@ export function findReusableAsset(
   );
 }
 
-export function findAssetByMarker(assets: readonly VideoAsset[], query: string): VideoAsset {
-  const needle = query.replace(/^\[\[pi-kimi-video:v1:/, "").replace(/\]\]$/, "");
-  const matches = assets.filter((asset) => asset.marker === query || markerId(asset.marker).startsWith(needle));
-  if (matches.length === 0) throw new Error(`No video marker matches "${query}" on the active branch.`);
-  if (matches.length > 1) throw new Error(`Marker prefix "${query}" is ambiguous (${matches.length} matches).`);
-  const match = matches[0];
-  if (!match) throw new Error("Video marker lookup failed.");
-  return match;
-}
-
-export function markerId(marker: string): string {
-  return marker.slice("[[pi-kimi-video:v1:".length, -2);
-}
 
 export function rewriteChatCompletionsPayload(
   payload: unknown, assets: readonly VideoAsset[], model: ModelIdentity | undefined,

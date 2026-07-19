@@ -2,16 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assetsFromBranch,
-  findAssetByMarker,
   findReusableAsset,
   parseMaxBytes,
-  parseRecallArgs,
   parseTimeoutMs,
-  parseVideoArgs,
+  promptWithoutVideoReference,
   rewriteChatCompletionsPayload,
   sanitizeTerminalText,
   singleLineTerminalText,
   validateVideoFile,
+  videoReferenceCandidates,
 } from "../src/logic.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
@@ -43,23 +42,31 @@ const asset: VideoAsset = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-test("parses quoted paths, escaped spaces, and the default prompt", () => {
-  assert.deepEqual(parseVideoArgs('  "folder/my clip.mp4" focus on motion'), {
-    path: "folder/my clip.mp4", prompt: "focus on motion",
+test("detects video references without exposing attachment commands", () => {
+  const quoted = 'Explain @"/tmp/my clip.mp4" carefully';
+  const [quotedCandidate] = videoReferenceCandidates(quoted);
+  assert.deepEqual(quotedCandidate, {
+    value: "/tmp/my clip.mp4",
+    start: 8,
+    end: quoted.indexOf(" carefully"),
   });
-  assert.deepEqual(parseVideoArgs("folder/my\\ clip.mp4"), {
-    path: "folder/my clip.mp4", prompt: "Describe this video in detail.",
-  });
-  assert.throws(() => parseVideoArgs('"broken.mp4'), /unterminated/);
-});
+  assert.equal(
+    promptWithoutVideoReference(quoted, quotedCandidate!),
+    "Explain carefully",
+  );
 
-test("parses recall marker prefixes and optional prompts", () => {
-  assert.deepEqual(parseRecallArgs("123e4567 new prompt with spaces"), {
-    id: "123e4567", prompt: "new prompt with spaces",
-  });
-  assert.deepEqual(parseRecallArgs(marker), { id: marker });
-  assert.equal(findAssetByMarker([asset], "123e4567"), asset);
-  assert.throws(() => parseRecallArgs("  "), /Usage/);
+  assert.equal(
+    videoReferenceCandidates("/tmp/my\\ clip.mp4 describe it")[0]?.value,
+    "/tmp/my clip.mp4",
+  );
+  assert.equal(
+    videoReferenceCandidates("C:\\videos\\clip.mp4 describe it")[0]?.value,
+    "C:\\videos\\clip.mp4",
+  );
+  assert.equal(
+    promptWithoutVideoReference("@clip.mp4", videoReferenceCandidates("@clip.mp4")[0]!),
+    "Describe this video in detail.",
+  );
 });
 
 test("validates formats and size limits", () => {
