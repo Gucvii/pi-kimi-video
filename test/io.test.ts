@@ -73,9 +73,12 @@ test("uploadVideo sends an authenticated multipart video upload with a FormData 
 });
 
 test("uploadVideo reports the HTTP status when an error response is not JSON", async () => {
-  const server = createServer((_request, response) => {
-    response.writeHead(503, { "content-type": "text/plain", connection: "close" });
-    response.end("temporarily unavailable");
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(503, { "content-type": "text/plain", connection: "close" });
+      response.end("temporarily unavailable");
+    });
   });
   const directory = await mkdtemp(join(tmpdir(), "pi-kimi-video-error-"));
   const path = join(directory, "tiny.mp4");
