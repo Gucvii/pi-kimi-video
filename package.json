@@ -1,6 +1,6 @@
 {
   "name": "pi-kimi-video",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Give Pi models a conflict-free native Kimi video reader",
   "type": "module",
   "license": "MIT",

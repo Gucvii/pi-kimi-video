@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { createReadToolDefinition, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Image, Text } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { inspectVideo, sha256File, uploadVideo } from "../src/io.ts";
 import {
   assetsFromBranch,
@@ -13,7 +13,6 @@ import {
   parseTimeoutMs,
   rewriteProviderPayload,
   sanitizeTerminalText,
-  singleLineTerminalText,
   validateVideoFile,
   videoFilesBaseUrl,
 } from "../src/logic.ts";
@@ -32,37 +31,22 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       "When the user asks about a local video path, call read_video instead of inferring anything from the file name. After the tool returns, analyze the native video content; if the model cannot access it, say so explicitly.",
     ],
     parameters: createReadToolDefinition(process.cwd()).parameters,
-    renderShell: "self",
     renderCall(args, theme) {
       return new Text(`${theme.fg("toolTitle", theme.bold("read_video"))} ${sanitizeTerminalText(args.path)}`, 0, 0);
     },
     renderResult(result, { expanded }, theme) {
       const asset = result.details as VideoAsset | undefined;
       if (!asset) return new Text(theme.fg("error", "Video read failed"), 0, 0);
-      const container = new Container();
       const dimensions = asset.width !== null && asset.height !== null
         ? `${asset.width}×${asset.height}`
         : "unknown";
       const duration = asset.duration !== null ? formatDuration(asset.duration) : "unknown";
       const summary = `${theme.fg("accent", "Video")} ${theme.bold(sanitizeTerminalText(asset.fileName))} · ${formatBytes(asset.size)} · ${duration} · ${dimensions}`;
-      container.addChild(new Text(
+      return new Text(
         expanded ? `${summary}\n${theme.fg("dim", sanitizeTerminalText(asset.localPath))}` : summary,
         0,
         0,
-      ));
-      if (asset.thumbnailBase64) {
-        container.addChild(new Image(
-          asset.thumbnailBase64,
-          "image/jpeg",
-          { fallbackColor: (text) => theme.fg("dim", text) },
-          {
-            maxWidthCells: expanded ? 72 : 56,
-            maxHeightCells: expanded ? 18 : 12,
-            filename: `${singleLineTerminalText(asset.fileName)}.jpg`,
-          },
-        ));
-      }
-      return container;
+      );
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const localPath = resolve(ctx.cwd, params.path);
@@ -81,10 +65,7 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       }
       rememberAsset(asset);
       return {
-        content: [{
-          type: "text" as const,
-          text: `${asset.marker}\nNative video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.`,
-        }],
+        content: createVideoToolContent(asset),
         details: asset,
       };
     },
@@ -106,6 +87,18 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
   pi.on("before_provider_request", (event, ctx) =>
     rewriteProviderPayload(event.payload, getAssets(ctx), ctx.model),
   );
+}
+
+export function createVideoToolContent(asset: VideoAsset) {
+  return [
+    {
+      type: "text" as const,
+      text: `${asset.marker}\nNative video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.`,
+    },
+    ...(asset.thumbnailBase64
+      ? [{ type: "image" as const, data: asset.thumbnailBase64, mimeType: "image/jpeg" }]
+      : []),
+  ];
 }
 
 async function prepareAsset(

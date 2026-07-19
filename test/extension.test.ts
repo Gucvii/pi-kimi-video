@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import kimiVideoExtension from "../extensions/index.ts";
+import kimiVideoExtension, { createVideoToolContent } from "../extensions/index.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
 type ProviderRequestHandler = (
@@ -29,7 +29,7 @@ type VideoTool = {
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: ExtensionContext,
-  ) => Promise<{ content: Array<{ type: string; text?: string }>; details?: unknown }>;
+  ) => Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details?: unknown }>;
 };
 
 async function listen(server: Server): Promise<number> {
@@ -126,7 +126,7 @@ test("read_video uploads, renders, and injects a top-level native video block", 
       content: [{
         type: "tool_result",
         tool_use_id: "read-call",
-        content: readResult.content,
+        content: createVideoToolContent({ ...readAsset, thumbnailBase64: "AA==" }),
       }],
     }] };
     const injected = providerRequestHandler(
@@ -137,24 +137,26 @@ test("read_video uploads, renders, and injects a top-level native video block", 
       {
         type: "tool_result",
         tool_use_id: "read-call",
-        content: [{
-          type: "text",
-          text: "Native video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.",
-        }],
+        content: [
+          {
+            type: "text",
+            text: "Native video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.",
+          },
+          { type: "image", data: "AA==", mimeType: "image/jpeg" },
+        ],
       },
       { type: "video", source: { type: "url", url: "ms://file-extension-test" } },
     ]);
     assert.doesNotMatch(JSON.stringify(injected), /pi-kimi-video/);
 
-    assert.equal(videoTool.renderShell, "self");
+    assert.equal(videoTool.renderShell, undefined);
     assert.ok(videoTool.renderResult);
     const rendered = videoTool.renderResult(
       { details: { ...readAsset, thumbnailBase64: "AA==" } },
       { expanded: false },
       { fg: (_name, text) => text, bold: (text) => text },
-    ) as { children: unknown[] };
-    assert.equal(rendered.children.length, 2);
-    assert.equal(rendered.children[1]?.constructor.name, "Image");
+    );
+    assert.equal((rendered as { constructor: { name: string } }).constructor.name, "Text");
   } finally {
     await close(server);
     await rm(directory, { recursive: true, force: true });

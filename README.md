@@ -7,7 +7,7 @@ No video commands, attachment syntax, asset IDs, or original-video base64 blobs 
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.5.0
+pi install git:github.com/Gucvii/pi-kimi-video@v0.5.1
 pi
 ```
 
@@ -39,7 +39,8 @@ Supported formats: MP4, MPEG/MPG, MOV, AVI, FLV, WebM, WMV, 3GP, and 3GPP.
 - Reuses an upload for the same file hash, provider, and normalized endpoint.
 - Preserves video context across session reloads and model switches.
 - Gives unsupported models a safe text placeholder; switching back to the original Kimi endpoint restores the native video part.
-- Shows an ffmpeg thumbnail and ffprobe metadata when those tools are installed. Both are optional.
+- Returns the optional ffmpeg thumbnail as a standard Pi image tool result, using Pi's native terminal capability detection, Kitty PNG conversion, visibility settings, and fallback rendering.
+- Shows duration and dimensions when optional ffprobe metadata is available.
 
 ## Advanced limits
 
