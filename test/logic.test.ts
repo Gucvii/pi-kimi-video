@@ -18,10 +18,10 @@ import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
 const marker = "[[pi-kimi-video:v1:123e4567-e89b-12d3-a456-426614174000]]";
 const model: ModelIdentity = {
-  provider: "moonshotai",
-  id: "kimi-k3",
-  baseUrl: "https://api.moonshot.ai/v1/",
-  api: "openai-completions",
+  provider: "kimi-coding",
+  id: "kimi-for-coding",
+  baseUrl: "https://api.kimi.com/coding",
+  api: "anthropic-messages",
 };
 
 const asset: VideoAsset = {
@@ -29,8 +29,8 @@ const asset: VideoAsset = {
   version: "v1",
   fileId: "file-1",
   msUri: "ms://file-1",
-  provider: "moonshotai",
-  baseUrl: "https://api.moonshot.ai/v1",
+  provider: "kimi-coding",
+  baseUrl: model.baseUrl,
   fileName: "clip.mp4",
   localPath: "/tmp/clip.mp4",
   hash: "abc",
@@ -44,17 +44,6 @@ const asset: VideoAsset = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-const codingModel: ModelIdentity = {
-  provider: "kimi-coding",
-  id: "kimi-for-coding",
-  baseUrl: "https://api.kimi.com/coding",
-  api: "anthropic-messages",
-};
-const codingAsset: VideoAsset = {
-  ...asset,
-  provider: "kimi-coding",
-  baseUrl: codingModel.baseUrl,
-};
 
 test("detects video references without exposing attachment commands", () => {
   const quoted = 'Explain @"/tmp/my clip.mp4" carefully';
@@ -100,28 +89,49 @@ test("parses the operation timeout", () => {
   }
 });
 
-test("injects a video_url and clean prompt into Kimi string content", () => {
+test("injects native video and a clean prompt into Kimi Coding content", () => {
   const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
   const result = rewriteProviderPayload(payload, [asset], model);
   assert.deepEqual(result, { messages: [{ role: "user", content: [
-    { type: "video_url", video_url: { url: "ms://file-1" } },
+    { type: "video", source: { type: "url", url: "ms://file-1" } },
     { type: "text", text: "Explain it" },
   ] }] });
 });
 
 test("supports Kimi Coding video models through the Anthropic-compatible payload", () => {
-  assert.equal(isKimiVideoModel(codingModel), true);
-  assert.equal(isKimiVideoModel({ ...codingModel, id: "kimi-for-coding-highspeed" }), true);
-  assert.equal(isKimiVideoModel({ ...codingModel, id: "k3" }), true);
-  assert.equal(isKimiVideoModel({ ...codingModel, id: "k2p7" }), false);
-  assert.equal(videoFilesBaseUrl(codingModel), "https://api.kimi.com/coding/v1");
+  assert.equal(isKimiVideoModel(model), true);
+  assert.equal(isKimiVideoModel({ ...model, id: "kimi-for-coding-highspeed" }), true);
+  assert.equal(isKimiVideoModel({ ...model, id: "k3" }), true);
+  assert.equal(isKimiVideoModel({ ...model, id: "k2p7" }), false);
+  assert.equal(videoFilesBaseUrl(model), "https://api.kimi.com/coding/v1");
 
   const payload = { messages: [{ role: "user", content: [{ type: "text", text: `${marker}\nExplain it` }] }] };
-  assert.deepEqual(rewriteProviderPayload(payload, [codingAsset], codingModel), {
+  assert.deepEqual(rewriteProviderPayload(payload, [asset], model), {
     messages: [{ role: "user", content: [
       { type: "video", source: { type: "url", url: "ms://file-1" } },
       { type: "text", text: "Explain it" },
     ] }],
+  });
+});
+
+test("injects video into an Anthropic tool_result produced by read", () => {
+  const payload = { messages: [{
+    role: "user",
+    content: [{
+      type: "tool_result",
+      tool_use_id: "call-1",
+      content: [{ type: "text", text: `${marker}\nRead video file` }],
+    }],
+  }] };
+  assert.deepEqual(rewriteProviderPayload(payload, [asset], model), {
+    messages: [{ role: "user", content: [{
+      type: "tool_result",
+      tool_use_id: "call-1",
+      content: [
+        { type: "video", source: { type: "url", url: "ms://file-1" } },
+        { type: "text", text: "Read video file" },
+      ],
+    }] }],
   });
 });
 
@@ -134,11 +144,11 @@ test("uses safe text placeholders for non-Kimi models and never emits ms URI", (
   assert.doesNotMatch(serialized, /ms:\/\//);
 });
 
-test("injects only when provider and normalized base URL match the current direct Kimi endpoint", () => {
+test("injects only when model and normalized Kimi Coding endpoint match", () => {
   const payload = { messages: [{ role: "user", content: `${marker}\nKeep this prompt` }] };
   const mismatches: ModelIdentity[] = [
-    { ...model, provider: "moonshotai-cn" },
-    { ...model, baseUrl: "https://other.moonshot.ai/v1" },
+    { ...model, id: "k2p7" },
+    { ...model, baseUrl: "https://other.kimi.test/coding" },
   ];
   for (const mismatch of mismatches) {
     const result = rewriteProviderPayload(payload, [asset], mismatch);
@@ -158,7 +168,7 @@ test("rewrites text parts while preserving image and custom content parts", () =
   const payload = { messages: [{ role: "user", content: [image, { type: "text", text: `${marker}\nPrompt` }, tool] }] };
   const result = rewriteProviderPayload(payload, [asset], model) as { messages: Array<{ content: unknown[] }> };
   assert.equal(result.messages[0]?.content[0], image);
-  assert.deepEqual(result.messages[0]?.content[1], { type: "video_url", video_url: { url: asset.msUri } });
+  assert.deepEqual(result.messages[0]?.content[1], { type: "video", source: { type: "url", url: asset.msUri } });
   assert.equal(result.messages[0]?.content[3], tool);
 });
 
@@ -190,18 +200,19 @@ test("removes terminal control sequences and forces untrusted list values onto o
   assert.equal(singleLineTerminalText("file\nname\r\t.mp4"), "file name .mp4");
 });
 
-test("restores assets only from active branch custom messages", () => {
+test("restores assets from explicit attachments and read tool results", () => {
   const entries = [
     { type: "custom_message", customType: "other", details: asset },
     { type: "message", details: asset },
+    { type: "message", message: { role: "toolResult", toolName: "read", details: asset } },
     { type: "custom_message", customType: "kimi-video", details: asset },
     { type: "custom_message", customType: "kimi-video", details: { broken: true } },
   ];
-  assert.deepEqual(assetsFromBranch(entries), [asset]);
+  assert.deepEqual(assetsFromBranch(entries), [asset, asset]);
 });
 
 test("finds reusable uploads by provider, normalized base URL, and hash", () => {
-  assert.equal(findReusableAsset([asset], "moonshotai", "https://api.moonshot.ai/v1/", "abc"), asset);
-  assert.equal(findReusableAsset([asset], "moonshotai-cn", asset.baseUrl, "abc"), undefined);
-  assert.equal(findReusableAsset([asset], "moonshotai", asset.baseUrl, "different"), undefined);
+  assert.equal(findReusableAsset([asset], "kimi-coding", "https://api.kimi.com/coding/", "abc"), asset);
+  assert.equal(findReusableAsset([asset], "other-provider", asset.baseUrl, "abc"), undefined);
+  assert.equal(findReusableAsset([asset], "kimi-coding", asset.baseUrl, "different"), undefined);
 });

@@ -20,20 +20,14 @@ const EXTENSION_MIME = new Map<string, string>([
 const KIMI_CODING_VIDEO_MODELS = new Set(["k3", "kimi-for-coding", "kimi-for-coding-highspeed"]);
 
 export function isKimiVideoModel(model: ModelIdentity | undefined): boolean {
-  if (!model) return false;
-  if (model.provider === "kimi-coding") {
-    return KIMI_CODING_VIDEO_MODELS.has(model.id)
-      && (model.api === undefined || model.api === "anthropic-messages");
-  }
-  return model.id === "kimi-k3"
-    && (model.provider === "moonshotai" || model.provider === "moonshotai-cn")
-    && (model.api === undefined || model.api === "openai-completions");
+  return model?.provider === "kimi-coding"
+    && KIMI_CODING_VIDEO_MODELS.has(model.id)
+    && (model.api === undefined || model.api === "anthropic-messages");
 }
 
 export function videoFilesBaseUrl(model: ModelIdentity): string {
   const baseUrl = normalizeBaseUrl(model.baseUrl);
-  if (model.provider === "kimi-coding" && !baseUrl.endsWith("/v1")) return `${baseUrl}/v1`;
-  return baseUrl;
+  return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
 }
 
 export interface VideoReferenceCandidate {
@@ -158,7 +152,7 @@ export function isVideoAsset(value: unknown): value is VideoAsset {
     && typeof value.fileId === "string"
     && typeof value.msUri === "string"
     && value.msUri.startsWith("ms://")
-    && (value.provider === "kimi-coding" || value.provider === "moonshotai" || value.provider === "moonshotai-cn")
+    && value.provider === "kimi-coding"
     && typeof value.baseUrl === "string"
     && typeof value.fileName === "string"
     && typeof value.localPath === "string"
@@ -178,6 +172,12 @@ export function assetsFromBranch(entries: readonly BranchEntryLike[]): VideoAsse
   for (const entry of entries) {
     if (entry.type === "custom_message" && entry.customType === CUSTOM_TYPE && isVideoAsset(entry.details)) {
       assets.push(entry.details);
+      continue;
+    }
+    if (entry.type === "message" && isRecord(entry.message)
+      && entry.message.role === "toolResult" && entry.message.toolName === "read"
+      && isVideoAsset(entry.message.details)) {
+      assets.push(entry.message.details);
     }
   }
   return assets;
@@ -207,19 +207,10 @@ export function rewriteProviderPayload(
       return { ...message, content };
     }
     if (Array.isArray(message.content)) {
-      let contentChanged = false;
-      const content: unknown[] = [];
-      for (const part of message.content) {
-        if (isRecord(part) && part.type === "text" && typeof part.text === "string") {
-          const transformed = transformText(part.text, byMarker, model);
-          if (transformed !== part.text) contentChanged = true;
-          if (Array.isArray(transformed)) content.push(...transformed);
-          else content.push({ ...part, text: transformed });
-        } else content.push(part);
-      }
-      if (!contentChanged) return message;
+      const transformed = transformContentParts(message.content, byMarker, model);
+      if (!transformed.changed) return message;
       changed = true;
-      return { ...message, content };
+      return { ...message, content: transformed.content };
     }
     return message;
   });
@@ -228,8 +219,37 @@ export function rewriteProviderPayload(
 
 type PayloadPart =
   | { type: "text"; text: string }
-  | { type: "video_url"; video_url: { url: string } }
   | { type: "video"; source: { type: "url"; url: string } };
+
+function transformContentParts(
+  parts: readonly unknown[],
+  assets: ReadonlyMap<string, VideoAsset>,
+  model: ModelIdentity | undefined,
+): { content: unknown[]; changed: boolean } {
+  let changed = false;
+  const content: unknown[] = [];
+  for (const part of parts) {
+    if (isRecord(part) && part.type === "text" && typeof part.text === "string") {
+      const transformed = transformText(part.text, assets, model);
+      if (transformed !== part.text) changed = true;
+      if (Array.isArray(transformed)) content.push(...transformed);
+      else content.push({ ...part, text: transformed });
+      continue;
+    }
+    if (isRecord(part) && part.type === "tool_result" && Array.isArray(part.content)) {
+      const nested = transformContentParts(part.content, assets, model);
+      if (nested.changed) {
+        changed = true;
+        content.push({ ...part, content: nested.content });
+      } else {
+        content.push(part);
+      }
+      continue;
+    }
+    content.push(part);
+  }
+  return { content, changed };
+}
 
 function transformText(
   text: string,
@@ -263,7 +283,7 @@ function transformText(
     const before = text.slice(cursor, index);
     if (before) parts.push({ type: "text", text: before });
     if (canInject(matchedAsset)) {
-      parts.push(videoPayloadPart(model, matchedAsset.msUri));
+      parts.push({ type: "video", source: { type: "url", url: matchedAsset.msUri } });
       cursor = index + match[0].length;
       const whitespace = /^\s*\n\s*/.exec(text.slice(cursor));
       if (whitespace) cursor += whitespace[0].length;
@@ -277,11 +297,6 @@ function transformText(
   return parts;
 }
 
-function videoPayloadPart(model: ModelIdentity | undefined, url: string): PayloadPart {
-  return model?.provider === "kimi-coding"
-    ? { type: "video", source: { type: "url", url } }
-    : { type: "video_url", video_url: { url } };
-}
 
 function unavailablePlaceholder(asset: VideoAsset, marker: string): string {
   return `[Video attachment unavailable for the current model endpoint: ${asset.fileName}, ${formatBytes(asset.size)}, marker ${marker}]`;

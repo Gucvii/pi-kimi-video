@@ -1,7 +1,7 @@
 {
   "name": "pi-kimi-video",
-  "version": "0.3.0",
-  "description": "Attach local videos through Pi's existing Kimi Coding provider",
+  "version": "0.4.0",
+  "description": "Extend Pi's read tool with native Kimi video input",
   "type": "module",
   "license": "MIT",
   "keywords": [

@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { basename } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Image, Text } from "@earendil-works/pi-tui";
+import { basename, resolve } from "node:path";
+import { createReadToolDefinition, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Container, Image, Text } from "@earendil-works/pi-tui";
 import { findVideoAttachment, inspectVideo, sha256File, uploadVideo } from "../src/io.ts";
 import {
   assetsFromBranch,
   findReusableAsset,
   formatBytes,
   isKimiVideoModel,
+  isSupportedVideoPath,
   parseMaxBytes,
   parseTimeoutMs,
   rewriteProviderPayload,
@@ -27,6 +28,7 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       return new Text(content, 0, 0);
     }
 
+    const container = new Container();
     const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
     const dimensions = typeof asset.width === "number" && typeof asset.height === "number"
       ? `${asset.width}×${asset.height}`
@@ -41,8 +43,9 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       0,
     ));
 
+    container.addChild(box);
     if (asset.thumbnailBase64) {
-      box.addChild(new Image(
+      container.addChild(new Image(
         asset.thumbnailBase64,
         "image/jpeg",
         { fallbackColor: (text) => theme.fg("dim", text) },
@@ -53,7 +56,39 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
         },
       ));
     }
-    return box;
+    return container;
+  });
+
+  const baseRead = createReadToolDefinition(process.cwd());
+  pi.registerTool({
+    ...baseRead,
+    description: `${baseRead.description} Video files are uploaded and returned as native Kimi video content when the selected model supports video input.`,
+    promptGuidelines: [
+      ...(baseRead.promptGuidelines ?? []),
+      "Use read on a video path when the user asks about a local video; do not use ffprobe or extract frames unless the user explicitly asks for media inspection.",
+    ],
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const rawPath = params.path.startsWith("@") ? params.path.slice(1) : params.path;
+      const localPath = resolve(ctx.cwd, rawPath);
+      if (!isSupportedVideoPath(localPath)) {
+        return createReadToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+      }
+      if (!ctx.model || !isKimiVideoModel(ctx.model)) {
+        throw new Error("The selected model does not support native video input.");
+      }
+
+      const timeoutMs = parseTimeoutMs(process.env.PI_KIMI_VIDEO_TIMEOUT_MS);
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      const operationSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const asset = await prepareAsset(localPath, "", ctx, operationSignal);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `${asset.marker}\nRead video file [${asset.mimeType}]: ${asset.fileName}`,
+        }],
+        details: asset as VideoAsset & { truncation?: never },
+      };
+    },
   });
 
   pi.on("input", async (event, ctx) => {

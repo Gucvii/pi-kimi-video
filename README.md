@@ -1,13 +1,13 @@
 # pi-kimi-video
 
-Native-feeling local video attachments for Pi's existing Kimi Coding provider, with optional Moonshot direct-API compatibility.
+Native-feeling local video attachments for Pi's existing Kimi Coding provider.
 
 No video commands, asset IDs, or original-video base64 blobs in the session. Drop or reference a local video in the normal editor, add your question, and send.
 
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.3.0
+pi install git:github.com/Gucvii/pi-kimi-video@v0.4.0
 pi
 ```
 
@@ -22,15 +22,19 @@ Kimi K3 is also supported, but K3 exposes only the `max` thinking level. Use `ki
 
 ## Use
 
-Use the same editor you already use for prompts:
+There are two native paths:
 
 ```text
 @./demo.mp4 Explain what changes over time.
 ```
 
-You can also drag a video file into the terminal or paste a local file path, type the question beside it, and press Enter. Quoted paths, escaped spaces, `@` references, and `file://` URLs are recognized automatically.
+An explicit `@` attachment or dropped path is uploaded before the turn. A normal natural-language reference also works:
 
-The attachment path disappears from the model prompt. Pi shows a video card and thumbnail, uploads the file to the selected Kimi endpoint, and sends the clean question normally.
+```text
+Tell me what this video shows: /Users/me/Downloads/demo.mp4
+```
+
+For a normal path reference, the model calls Pi's existing `read` tool. This package extends that same tool to load videos natively; text and image reads still delegate to Pi's original implementation. The user never needs a video-specific command or tool name.
 
 One video is accepted per message. Supported formats: MP4, MPEG/MPG, MOV, AVI, FLV, WebM, WMV, 3GP, and 3GPP.
 
@@ -40,9 +44,8 @@ Pi currently exposes image bytes and plain text through its clipboard action, no
 
 ## Behavior
 
-- Uses Kimi Coding's own `/v1/files` endpoint and existing credential for `purpose=video`.
+- Extends Pi's existing `read` tool: video paths become native video tool results, while text and images retain the original implementation.
 - Injects the Kimi Anthropic-compatible `{ "type": "video", "source": { "type": "url", "url": "ms://<file-id>" } }` block for `kimi-coding`.
-- Retains OpenAI `video_url` compatibility for direct `moonshotai` K3 endpoints.
 - Stores metadata, the `ms://` reference, and an optional small JPEG thumbnail in the Pi session; original video bytes/base64 are never persisted.
 - Reuses an upload for the same file hash, provider, and normalized endpoint.
 - Preserves video context across session reloads and model switches.
@@ -60,16 +63,12 @@ These controls are optional. Defaults are 512 MiB and 15 minutes.
 
 ## Scope
 
-Primary supported models:
+Supported models:
 
 - `kimi-coding/kimi-for-coding`
 - `kimi-coding/kimi-for-coding-highspeed`
 - `kimi-coding/k3`
 
-Optional direct-API compatibility:
-
-- `moonshotai/kimi-k3`
-- `moonshotai-cn/kimi-k3`
 
 Not supported:
 

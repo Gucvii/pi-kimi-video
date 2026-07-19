@@ -16,6 +16,23 @@ type ProviderRequestHandler = (
   event: { type: "before_provider_request"; payload: unknown },
   ctx: ExtensionContext,
 ) => unknown;
+type MessageRenderer = (
+  message: { content: string; details?: VideoAsset },
+  options: { expanded: boolean },
+  theme: { bg: (_name: string, text: string) => string; fg: (_name: string, text: string) => string; bold: (text: string) => string },
+) => unknown;
+type ReadOverride = {
+  name: string;
+  description: string;
+  promptGuidelines?: string[];
+  execute: (
+    toolCallId: string,
+    params: { path: string; offset?: number; limit?: number },
+    signal: AbortSignal | undefined,
+    onUpdate: undefined,
+    ctx: ExtensionContext,
+  ) => Promise<{ content: Array<{ type: string; text?: string }>; details?: unknown }>;
+};
 
 interface SentMessage {
   message: {
@@ -43,11 +60,14 @@ async function close(server: Server): Promise<void> {
 
 test("extension turns a normal video attachment into persisted Kimi context", async () => {
   let inputHandler: InputHandler | undefined;
+  let messageRenderer: MessageRenderer | undefined;
   let providerRequestHandler: ProviderRequestHandler | undefined;
+  let readOverride: ReadOverride | undefined;
   const sent: SentMessage[] = [];
 
   const pi = {
-    registerMessageRenderer: () => {},
+    registerMessageRenderer: (_type: string, renderer: MessageRenderer) => { messageRenderer = renderer; },
+    registerTool: (tool: ReadOverride) => { readOverride = tool; },
     on: (event: string, handler: InputHandler | ProviderRequestHandler) => {
       if (event === "input") inputHandler = handler as InputHandler;
       if (event === "before_provider_request") providerRequestHandler = handler as ProviderRequestHandler;
@@ -77,7 +97,7 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     api: "anthropic-messages",
     baseUrl: `http://127.0.0.1:${port}/coding`,
   };
-  let branch: Array<{ type: string; customType: string; details: VideoAsset }> = [];
+  let branch: Array<Record<string, unknown>> = [];
   const notifications: Array<{ message: string; level: string }> = [];
   const statuses: Array<string | undefined> = [];
   const context = {
@@ -98,6 +118,24 @@ test("extension turns a normal video attachment into persisted Kimi context", as
   } as unknown as ExtensionContext;
 
   try {
+    assert.ok(readOverride);
+    assert.equal(readOverride.name, "read");
+    assert.match(readOverride.description, /Video files/);
+    assert.match(readOverride.promptGuidelines?.join(" ") ?? "", /Use read on a video path/);
+    const readResult = await readOverride.execute(
+      "read-call",
+      { path: videoPath },
+      undefined,
+      undefined,
+      context,
+    );
+    const readAsset = readResult.details as VideoAsset;
+    assert.equal(readAsset.msUri, "ms://file-extension-test");
+    assert.match(readResult.content[0]?.text ?? "", /Read video file/);
+    branch = [{
+      type: "message",
+      message: { role: "toolResult", toolName: "read", details: readAsset },
+    }];
     assert.ok(inputHandler);
     const image = { type: "image", data: "base64-image", mimeType: "image/png" };
     const result = await inputHandler(
@@ -123,6 +161,19 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     assert.equal(asset.msUri, "ms://file-extension-test");
     assert.equal(asset.localPath, videoPath);
     assert.doesNotMatch(JSON.stringify(first), /small fake video payload/);
+
+    assert.ok(messageRenderer);
+    const rendered = messageRenderer(
+      { content: "", details: { ...asset, thumbnailBase64: "AA==" } },
+      { expanded: false },
+      {
+        bg: (_name, text) => text,
+        fg: (_name, text) => text,
+        bold: (text) => text,
+      },
+    ) as { children: unknown[] };
+    assert.equal(rendered.children.length, 2);
+    assert.equal(rendered.children[1]?.constructor.name, "Image");
 
     branch = [{ type: "custom_message", customType: "kimi-video", details: asset }];
     assert.ok(providerRequestHandler);

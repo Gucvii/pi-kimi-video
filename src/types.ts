@@ -9,7 +9,7 @@ export interface VideoAsset {
   version: "v1";
   fileId: string;
   msUri: string;
-  provider: "kimi-coding" | "moonshotai" | "moonshotai-cn";
+  provider: "kimi-coding";
   baseUrl: string;
   fileName: string;
   localPath: string;
@@ -35,6 +35,7 @@ export interface BranchEntryLike {
   type?: unknown;
   customType?: unknown;
   details?: unknown;
+  message?: unknown;
 }
 
 export const MARKER_PATTERN = /\[\[pi-kimi-video:v1:[0-9a-f-]+\]\]/gi;
