@@ -1,11 +1,7 @@
 # pi-kimi-video
 
 [![CI](https://github.com/Gucvii/pi-kimi-video/actions/workflows/ci.yml/badge.svg)](https://github.com/Gucvii/pi-kimi-video/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Gucvii/pi-kimi-video)](https://github.com/Gucvii/pi-kimi-video/releases/latest)
-
-Native-feeling local video reading for Pi's existing Kimi Coding provider.
-
-No video commands, attachment syntax, asset IDs, or original-video base64 blobs in the session. Mention a local video path naturally and let the model read it.
+[简体中文](README.zh-CN.md) · [Latest release: v0.6.1](https://github.com/Gucvii/pi-kimi-video/releases/tag/v0.6.1)
 
 ## Demo
 
