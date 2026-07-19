@@ -22,7 +22,7 @@ pi
 进入 Pi 后：
 
 1. 执行 `/login`，选择 **Kimi For Coding**。
-2. 执行 `/model`，选择 `kimi-coding/kimi-for-coding` 或 `kimi-coding/kimi-for-coding-highspeed`。
+2. 执行 `/model`，选择 `kimi-coding/kimi-for-coding`、`kimi-coding/kimi-for-coding-highspeed` 或 `kimi-coding/k3`。
 
 ## 使用
 

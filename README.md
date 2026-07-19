@@ -24,7 +24,7 @@ pi
 Inside Pi:
 
 1. Run `/login` and choose **Kimi For Coding**.
-2. Run `/model` and select `kimi-coding/kimi-for-coding` or `kimi-coding/kimi-for-coding-highspeed`.
+2. Run `/model` and select `kimi-coding/kimi-for-coding`, `kimi-coding/kimi-for-coding-highspeed`, or `kimi-coding/k3`.
 
 This reuses the normal Kimi Coding credential and subscription path. It does not require a separate Moonshot Open Platform account.
 
