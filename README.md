@@ -7,7 +7,7 @@ No video commands, asset IDs, or original-video base64 blobs in the session. Dro
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.4.1
+pi install git:github.com/Gucvii/pi-kimi-video@v0.4.2
 pi
 ```
 
@@ -27,7 +27,7 @@ There are two native paths:
 @./demo.mp4 Explain what changes over time.
 ```
 
-An explicit `@` attachment or dropped path is uploaded before the turn. A normal natural-language reference also works:
+An explicit `@` attachment or dropped path is uploaded and injected before the turn; the model must not call `read_video` again. A normal natural-language reference also works:
 
 ```text
 Tell me what this video shows: /Users/me/Downloads/demo.mp4
@@ -43,7 +43,7 @@ Pi currently exposes image bytes and plain text through its clipboard action, no
 
 ## Behavior
 
-- Registers a conflict-free `read_video` tool that turns local video paths into native Kimi video tool results.
+- Registers a conflict-free `read_video` tool only while a supported `kimi-coding` model is selected.
 - Injects the Kimi Anthropic-compatible `{ "type": "video", "source": { "type": "url", "url": "ms://<file-id>" } }` block for `kimi-coding`.
 - Stores metadata, the `ms://` reference, and an optional small JPEG thumbnail in the Pi session; original video bytes/base64 are never persisted.
 - Reuses an upload for the same file hash, provider, and normalized endpoint.

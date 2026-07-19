@@ -19,6 +19,8 @@ import {
 } from "../src/logic.ts";
 import { CUSTOM_TYPE, type VideoAsset } from "../src/types.ts";
 
+const runtimeAssets = new Map<string, VideoAsset>();
+
 export default function kimiVideoExtension(pi: ExtensionAPI): void {
   pi.registerMessageRenderer<VideoAsset>(CUSTOM_TYPE, (message, { expanded }, theme) => {
     const asset = message.details;
@@ -64,9 +66,41 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
     description: "Read a local video file and return it as native Kimi video content. Use this instead of bash, ffprobe, ffmpeg, or frame extraction when the user asks what a video contains.",
     promptSnippet: "Read a local video as native multimodal content",
     promptGuidelines: [
-      "Use read_video whenever the user asks about a local video path; do not inspect it with bash, ffprobe, ffmpeg, or extracted frames unless the user explicitly requests media diagnostics.",
+      "Use read_video only when the user references a local video path that is not already attached as native video content. Never call read_video for a video already present in the conversation as a video attachment.",
     ],
     parameters: createReadToolDefinition(process.cwd()).parameters,
+    renderShell: "self",
+    renderCall(args, theme) {
+      return new Text(`${theme.fg("toolTitle", theme.bold("read_video"))} ${sanitizeTerminalText(args.path)}`, 0, 0);
+    },
+    renderResult(result, { expanded }, theme) {
+      const asset = result.details as VideoAsset | undefined;
+      if (!asset) return new Text(theme.fg("error", "Video read failed"), 0, 0);
+      const container = new Container();
+      const dimensions = asset.width !== null && asset.height !== null
+        ? `${asset.width}×${asset.height}`
+        : "unknown";
+      const duration = asset.duration !== null ? formatDuration(asset.duration) : "unknown";
+      const summary = `${theme.fg("accent", "Video")} ${theme.bold(sanitizeTerminalText(asset.fileName))} · ${formatBytes(asset.size)} · ${duration} · ${dimensions}`;
+      container.addChild(new Text(
+        expanded ? `${summary}\n${theme.fg("dim", sanitizeTerminalText(asset.localPath))}` : summary,
+        0,
+        0,
+      ));
+      if (asset.thumbnailBase64) {
+        container.addChild(new Image(
+          asset.thumbnailBase64,
+          "image/jpeg",
+          { fallbackColor: (text) => theme.fg("dim", text) },
+          {
+            maxWidthCells: expanded ? 72 : 56,
+            maxHeightCells: expanded ? 18 : 12,
+            filename: `${singleLineTerminalText(asset.fileName)}.jpg`,
+          },
+        ));
+      }
+      return container;
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const rawPath = params.path.startsWith("@") ? params.path.slice(1) : params.path;
       const localPath = resolve(ctx.cwd, rawPath);
@@ -78,6 +112,7 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const operationSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
       const asset = await prepareAsset(localPath, "", ctx, operationSignal);
+      rememberAsset(asset);
       return {
         content: [{
           type: "text" as const,
@@ -87,6 +122,18 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       };
     },
   });
+
+  const syncVideoTool = (model: ExtensionContext["model"]): void => {
+    const active = pi.getActiveTools();
+    const hasTool = active.includes("read_video");
+    const shouldEnable = isKimiVideoModel(model);
+    if (shouldEnable === hasTool) return;
+    pi.setActiveTools(shouldEnable
+      ? [...active, "read_video"]
+      : active.filter((name) => name !== "read_video"));
+  };
+  pi.on("session_start", (_event, ctx) => syncVideoTool(ctx.model));
+  pi.on("model_select", (event) => syncVideoTool(event.model));
 
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") return { action: "continue" as const };
@@ -125,7 +172,8 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
         ctx,
         operationSignal,
       );
-      const markerText = `${asset.marker}\nAttached video: ${asset.fileName}`;
+      rememberAsset(asset);
+      const markerText = `${asset.marker}\nVideo already attached as native content: ${asset.fileName}. Do not call read_video for this video.`;
       pi.sendMessage({
         customType: CUSTOM_TYPE,
         content: markerText,
@@ -211,8 +259,16 @@ async function prepareAsset(
   };
 }
 
+function rememberAsset(asset: VideoAsset): void {
+  runtimeAssets.set(asset.marker, asset);
+}
+
 function getAssets(ctx: ExtensionContext): VideoAsset[] {
-  return assetsFromBranch(ctx.sessionManager.getBranch());
+  const assets = new Map(runtimeAssets);
+  for (const asset of assetsFromBranch(ctx.sessionManager.getBranch())) {
+    assets.set(asset.marker, asset);
+  }
+  return [...assets.values()];
 }
 
 function hasAuthorization(headers: Readonly<Record<string, string>> | undefined): boolean {

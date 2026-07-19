@@ -25,6 +25,12 @@ type VideoTool = {
   name: string;
   description: string;
   promptGuidelines?: string[];
+  renderShell?: string;
+  renderResult?: (
+    result: { details?: unknown },
+    options: { expanded: boolean },
+    theme: { fg: (_name: string, text: string) => string; bold: (text: string) => string },
+  ) => unknown;
   execute: (
     toolCallId: string,
     params: { path: string },
@@ -62,16 +68,23 @@ test("extension turns a normal video attachment into persisted Kimi context", as
   let inputHandler: InputHandler | undefined;
   let messageRenderer: MessageRenderer | undefined;
   let providerRequestHandler: ProviderRequestHandler | undefined;
+  let sessionStartHandler: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+  let modelSelectHandler: ((event: { model: ModelIdentity }) => void) | undefined;
   let videoTool: VideoTool | undefined;
   const sent: SentMessage[] = [];
+  let activeTools = ["read", "bash", "read_video"];
 
   const pi = {
     registerMessageRenderer: (_type: string, renderer: MessageRenderer) => { messageRenderer = renderer; },
     registerTool: (tool: VideoTool) => { videoTool = tool; },
-    on: (event: string, handler: InputHandler | ProviderRequestHandler) => {
+    on: (event: string, handler: unknown) => {
       if (event === "input") inputHandler = handler as InputHandler;
       if (event === "before_provider_request") providerRequestHandler = handler as ProviderRequestHandler;
+      if (event === "session_start") sessionStartHandler = handler as typeof sessionStartHandler;
+      if (event === "model_select") modelSelectHandler = handler as typeof modelSelectHandler;
     },
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (tools: string[]) => { activeTools = tools; },
     sendMessage: (message: SentMessage["message"], options?: SentMessage["options"]) => {
       sent.push(options ? { message, options } : { message });
     },
@@ -118,10 +131,16 @@ test("extension turns a normal video attachment into persisted Kimi context", as
   } as unknown as ExtensionContext;
 
   try {
+    assert.ok(sessionStartHandler);
+    sessionStartHandler({}, { ...context, model: { ...model, id: "unsupported" } } as ExtensionContext);
+    assert.doesNotMatch(activeTools.join(" "), /read_video/);
+    assert.ok(modelSelectHandler);
+    modelSelectHandler({ model });
+    assert.match(activeTools.join(" "), /read_video/);
     assert.ok(videoTool);
     assert.equal(videoTool.name, "read_video");
     assert.match(videoTool.description, /Read a local video/);
-    assert.match(videoTool.promptGuidelines?.join(" ") ?? "", /Use read_video/);
+    assert.match(videoTool.promptGuidelines?.join(" ") ?? "", /only when.*not already attached/);
     const readResult = await videoTool.execute(
       "read-call",
       { path: videoPath },
@@ -132,6 +151,32 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     const readAsset = readResult.details as VideoAsset;
     assert.equal(readAsset.msUri, "ms://file-extension-test");
     assert.match(readResult.content[0]?.text ?? "", /Read video file/);
+
+    assert.ok(providerRequestHandler);
+    const immediatePayload = { messages: [{
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "read-call",
+        content: readResult.content,
+      }],
+    }] };
+    const immediateResult = providerRequestHandler(
+      { type: "before_provider_request", payload: immediatePayload },
+      context,
+    );
+    assert.match(JSON.stringify(immediateResult), /"type":"video"/);
+    assert.doesNotMatch(JSON.stringify(immediateResult), /\[\[pi-kimi-video/);
+
+    assert.equal(videoTool.renderShell, "self");
+    assert.ok(videoTool.renderResult);
+    const renderedTool = videoTool.renderResult(
+      { details: { ...readAsset, thumbnailBase64: "AA==" } },
+      { expanded: false },
+      { fg: (_name, text) => text, bold: (text) => text },
+    ) as { children: unknown[] };
+    assert.equal(renderedTool.children.length, 2);
+    assert.equal(renderedTool.children[1]?.constructor.name, "Image");
     branch = [{
       type: "message",
       message: { role: "toolResult", toolName: "read_video", details: readAsset },
