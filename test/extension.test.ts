@@ -243,8 +243,9 @@ test("extension turns a normal video attachment into persisted Kimi context", as
       textContext,
     );
     const serializedTextPayload = JSON.stringify(textPayload);
-    assert.match(serializedTextPayload, /Video attachment unavailable/);
+    assert.match(serializedTextPayload, /Video attachment omitted/);
     assert.doesNotMatch(serializedTextPayload, /ms:\/\//);
+    assert.doesNotMatch(serializedTextPayload, /pi-kimi-video/);
   } finally {
     await close(server);
     await rm(directory, { recursive: true, force: true });

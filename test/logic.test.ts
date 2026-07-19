@@ -139,9 +139,10 @@ test("uses safe text placeholders for non-Kimi models and never emits ms URI", (
   const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
   const result = rewriteProviderPayload(payload, [asset], undefined);
   const serialized = JSON.stringify(result);
-  assert.match(serialized, /Video attachment unavailable/);
+  assert.match(serialized, /Video attachment omitted/);
   assert.match(serialized, /Explain it/);
   assert.doesNotMatch(serialized, /ms:\/\//);
+  assert.doesNotMatch(serialized, /pi-kimi-video/);
 });
 
 test("injects only when model and normalized Kimi Coding endpoint match", () => {
@@ -154,7 +155,7 @@ test("injects only when model and normalized Kimi Coding endpoint match", () => 
     const result = rewriteProviderPayload(payload, [asset], mismatch);
     const serialized = JSON.stringify(result);
     assert.doesNotMatch(serialized, /ms:\/\//);
-    assert.match(serialized, /Video attachment unavailable/);
+    assert.match(serialized, /Video attachment omitted/);
     assert.match(serialized, /Keep this prompt/);
   }
 

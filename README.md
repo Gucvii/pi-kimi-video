@@ -7,7 +7,7 @@ No video commands, asset IDs, or original-video base64 blobs in the session. Dro
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.4.2
+pi install git:github.com/Gucvii/pi-kimi-video@v0.4.3
 pi
 ```
 

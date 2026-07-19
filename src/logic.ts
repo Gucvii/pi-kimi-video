@@ -270,7 +270,7 @@ function transformText(
   })) {
     return text.replace(MARKER_PATTERN, (matchedMarker) => {
       const matchedAsset = assets.get(matchedMarker);
-      return matchedAsset ? unavailablePlaceholder(matchedAsset, matchedMarker) : matchedMarker;
+      return matchedAsset ? unavailablePlaceholder(matchedAsset) : matchedMarker;
     });
   }
 
@@ -288,7 +288,7 @@ function transformText(
       const whitespace = /^\s*\n\s*/.exec(text.slice(cursor));
       if (whitespace) cursor += whitespace[0].length;
     } else {
-      parts.push({ type: "text", text: unavailablePlaceholder(matchedAsset, match[0]) });
+      parts.push({ type: "text", text: unavailablePlaceholder(matchedAsset) });
       cursor = index + match[0].length;
     }
   }
@@ -298,8 +298,8 @@ function transformText(
 }
 
 
-function unavailablePlaceholder(asset: VideoAsset, marker: string): string {
-  return `[Video attachment unavailable for the current model endpoint: ${asset.fileName}, ${formatBytes(asset.size)}, marker ${marker}]`;
+function unavailablePlaceholder(asset: VideoAsset): string {
+  return `[Video attachment omitted: the current model does not support this Kimi video asset (${asset.fileName}, ${formatBytes(asset.size)}).]`;
 }
 
 export function sanitizeTerminalText(value: string): string {
