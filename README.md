@@ -1,13 +1,26 @@
 # pi-kimi-video
 
+[![CI](https://github.com/Gucvii/pi-kimi-video/actions/workflows/ci.yml/badge.svg)](https://github.com/Gucvii/pi-kimi-video/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Gucvii/pi-kimi-video)](https://github.com/Gucvii/pi-kimi-video/releases/latest)
+
 Native-feeling local video reading for Pi's existing Kimi Coding provider.
 
 No video commands, attachment syntax, asset IDs, or original-video base64 blobs in the session. Mention a local video path naturally and let the model read it.
 
+## Demo
+
+Mention a local video naturally. The model calls `read_video`, uploads it through the existing Kimi Coding credential, and renders a native Pi thumbnail:
+
+![read_video tool call with native thumbnail](docs/read-video-tool.png)
+
+The tool returns an actual Kimi video analysis rather than guessing from the file name:
+
+![Kimi video analysis result](docs/video-analysis-result.png)
+
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.6.0
+pi install git:github.com/Gucvii/pi-kimi-video@v0.6.1
 pi
 ```
 
