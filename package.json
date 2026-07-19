@@ -1,7 +1,7 @@
 {
   "name": "pi-kimi-video",
-  "version": "0.2.0",
-  "description": "Attach local videos to Kimi K3 through Pi's normal prompt editor",
+  "version": "0.3.0",
+  "description": "Attach local videos through Pi's existing Kimi Coding provider",
   "type": "module",
   "license": "MIT",
   "keywords": [

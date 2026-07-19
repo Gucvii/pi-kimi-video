@@ -8,13 +8,14 @@ import {
   assetsFromBranch,
   findReusableAsset,
   formatBytes,
-  isDirectKimi,
+  isKimiVideoModel,
   parseMaxBytes,
   parseTimeoutMs,
-  rewriteChatCompletionsPayload,
+  rewriteProviderPayload,
   sanitizeTerminalText,
   singleLineTerminalText,
   validateVideoFile,
+  videoFilesBaseUrl,
 } from "../src/logic.ts";
 import { CUSTOM_TYPE, type VideoAsset } from "../src/types.ts";
 
@@ -71,9 +72,9 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       ctx.ui.notify("Wait for the current turn to finish, then send the video again.", "warning");
       return { action: "handled" as const };
     }
-    if (!ctx.model || !isDirectKimi(ctx.model)) {
+    if (!ctx.model || !isKimiVideoModel(ctx.model)) {
       ctx.ui.notify(
-        "Video input requires moonshotai/kimi-k3 or moonshotai-cn/kimi-k3. Configure Moonshot with /login, then select Kimi K3 with /model.",
+        "The selected model does not expose video input. Use kimi-coding/kimi-for-coding, kimi-coding/kimi-for-coding-highspeed, or a supported K3 model.",
         "warning",
       );
       return { action: "handled" as const };
@@ -111,7 +112,7 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("before_provider_request", (event, ctx) =>
-    rewriteChatCompletionsPayload(event.payload, getAssets(ctx), ctx.model),
+    rewriteProviderPayload(event.payload, getAssets(ctx), ctx.model),
   );
 }
 
@@ -121,8 +122,8 @@ async function prepareAsset(
   ctx: ExtensionContext,
   signal: AbortSignal,
 ): Promise<VideoAsset> {
-  if (!ctx.model || !isDirectKimi(ctx.model)) {
-    throw new Error("The selected model is no longer a supported direct Kimi K3 endpoint.");
+  if (!ctx.model || !isKimiVideoModel(ctx.model)) {
+    throw new Error("The selected model no longer exposes Kimi video input.");
   }
   const fileStat = await stat(localPath);
   if (!fileStat.isFile()) throw new Error(`Video path is not a regular file: ${localPath}`);
@@ -145,14 +146,14 @@ async function prepareAsset(
     };
   } else {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-    if (!auth.ok) throw new Error(`Moonshot authentication unavailable: ${auth.error}`);
+    if (!auth.ok) throw new Error(`Kimi authentication unavailable: ${auth.error}`);
     if (!auth.apiKey && !hasAuthorization(auth.headers)) {
-      throw new Error(`Moonshot authentication is missing. Run /login ${ctx.model.provider} and try again.`);
+      throw new Error(`Kimi authentication is missing. Run /login ${ctx.model.provider} and try again.`);
     }
     const headers: Record<string, string> = { ...(auth.headers ?? {}) };
     if (auth.apiKey && !hasAuthorization(headers)) headers.Authorization = `Bearer ${auth.apiKey}`;
     [uploaded, media] = await Promise.all([
-      uploadVideo(localPath, mimeType, ctx.model.baseUrl, headers, signal),
+      uploadVideo(localPath, mimeType, videoFilesBaseUrl(ctx.model), headers, signal),
       inspectVideo(localPath, signal),
     ]);
   }
@@ -162,7 +163,7 @@ async function prepareAsset(
     version: "v1",
     fileId: uploaded.fileId,
     msUri: uploaded.msUri,
-    provider: ctx.model.provider === "moonshotai-cn" ? "moonshotai-cn" : "moonshotai",
+    provider: ctx.model.provider as VideoAsset["provider"],
     baseUrl: ctx.model.baseUrl,
     fileName: basename(localPath),
     localPath,

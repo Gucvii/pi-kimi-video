@@ -17,10 +17,23 @@ const EXTENSION_MIME = new Map<string, string>([
   [".3gpp", "video/3gpp"],
 ]);
 
-export function isDirectKimi(model: ModelIdentity | undefined): boolean {
-  return model?.id === "kimi-k3"
+const KIMI_CODING_VIDEO_MODELS = new Set(["k3", "kimi-for-coding", "kimi-for-coding-highspeed"]);
+
+export function isKimiVideoModel(model: ModelIdentity | undefined): boolean {
+  if (!model) return false;
+  if (model.provider === "kimi-coding") {
+    return KIMI_CODING_VIDEO_MODELS.has(model.id)
+      && (model.api === undefined || model.api === "anthropic-messages");
+  }
+  return model.id === "kimi-k3"
     && (model.provider === "moonshotai" || model.provider === "moonshotai-cn")
     && (model.api === undefined || model.api === "openai-completions");
+}
+
+export function videoFilesBaseUrl(model: ModelIdentity): string {
+  const baseUrl = normalizeBaseUrl(model.baseUrl);
+  if (model.provider === "kimi-coding" && !baseUrl.endsWith("/v1")) return `${baseUrl}/v1`;
+  return baseUrl;
 }
 
 export interface VideoReferenceCandidate {
@@ -145,7 +158,7 @@ export function isVideoAsset(value: unknown): value is VideoAsset {
     && typeof value.fileId === "string"
     && typeof value.msUri === "string"
     && value.msUri.startsWith("ms://")
-    && (value.provider === "moonshotai" || value.provider === "moonshotai-cn")
+    && (value.provider === "kimi-coding" || value.provider === "moonshotai" || value.provider === "moonshotai-cn")
     && typeof value.baseUrl === "string"
     && typeof value.fileName === "string"
     && typeof value.localPath === "string"
@@ -179,7 +192,7 @@ export function findReusableAsset(
 }
 
 
-export function rewriteChatCompletionsPayload(
+export function rewriteProviderPayload(
   payload: unknown, assets: readonly VideoAsset[], model: ModelIdentity | undefined,
 ): unknown {
   if (!isRecord(payload) || !Array.isArray(payload.messages)) return payload;
@@ -213,7 +226,10 @@ export function rewriteChatCompletionsPayload(
   return changed ? { ...payload, messages } : payload;
 }
 
-type PayloadPart = { type: "text"; text: string } | { type: "video_url"; video_url: { url: string } };
+type PayloadPart =
+  | { type: "text"; text: string }
+  | { type: "video_url"; video_url: { url: string } }
+  | { type: "video"; source: { type: "url"; url: string } };
 
 function transformText(
   text: string,
@@ -224,8 +240,9 @@ function transformText(
   const matches = [...text.matchAll(MARKER_PATTERN)].filter((match) => assets.has(match[0]));
   if (matches.length === 0) return text;
 
-  const canInject = (asset: VideoAsset): boolean => isDirectKimi(model)
-    && asset.provider === model?.provider
+  const canInject = (asset: VideoAsset): boolean => model !== undefined
+    && isKimiVideoModel(model)
+    && asset.provider === model.provider
     && normalizeBaseUrl(asset.baseUrl) === normalizeBaseUrl(model.baseUrl);
   if (!matches.some((match) => {
     const matchedAsset = assets.get(match[0]);
@@ -246,7 +263,7 @@ function transformText(
     const before = text.slice(cursor, index);
     if (before) parts.push({ type: "text", text: before });
     if (canInject(matchedAsset)) {
-      parts.push({ type: "video_url", video_url: { url: matchedAsset.msUri } });
+      parts.push(videoPayloadPart(model, matchedAsset.msUri));
       cursor = index + match[0].length;
       const whitespace = /^\s*\n\s*/.exec(text.slice(cursor));
       if (whitespace) cursor += whitespace[0].length;
@@ -258,6 +275,12 @@ function transformText(
   const after = text.slice(cursor);
   if (after) parts.push({ type: "text", text: after });
   return parts;
+}
+
+function videoPayloadPart(model: ModelIdentity | undefined, url: string): PayloadPart {
+  return model?.provider === "kimi-coding"
+    ? { type: "video", source: { type: "url", url } }
+    : { type: "video_url", video_url: { url } };
 }
 
 function unavailablePlaceholder(asset: VideoAsset, marker: string): string {

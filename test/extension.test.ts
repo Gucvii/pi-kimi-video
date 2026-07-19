@@ -58,19 +58,24 @@ test("extension turns a normal video attachment into persisted Kimi context", as
   } as unknown as ExtensionAPI;
   kimiVideoExtension(pi);
 
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ id: "file-extension-test" }));
+  let uploadPath: string | undefined;
+  const server = createServer((request, response) => {
+    uploadPath = request.url;
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: "file-extension-test" }));
+    });
   });
   const directory = await mkdtemp(join(tmpdir(), "pi-kimi-video-extension-"));
   const videoPath = join(directory, "demo clip.mp4");
   await writeFile(videoPath, "small fake video payload");
   const port = await listen(server);
   const model: ModelIdentity = {
-    provider: "moonshotai",
-    id: "kimi-k3",
-    api: "openai-completions",
-    baseUrl: `http://127.0.0.1:${port}/v1`,
+    provider: "kimi-coding",
+    id: "kimi-for-coding",
+    api: "anthropic-messages",
+    baseUrl: `http://127.0.0.1:${port}/coding`,
   };
   let branch: Array<{ type: string; customType: string; details: VideoAsset }> = [];
   const notifications: Array<{ message: string; level: string }> = [];
@@ -106,6 +111,7 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     });
     assert.deepEqual(notifications, []);
     assert.equal(statuses.at(-1), undefined);
+    assert.equal(uploadPath, "/coding/v1/files");
     assert.equal(sent.length, 1);
     const first = sent[0];
     assert.ok(first);
@@ -127,7 +133,10 @@ test("extension turns a normal video attachment into persisted Kimi context", as
       { type: "before_provider_request", payload: originalPayload },
       context,
     );
-    assert.match(JSON.stringify(kimiPayload), /ms:\/\/file-extension-test/);
+    assert.deepEqual(
+      (kimiPayload as { messages: Array<{ content: unknown[] }> }).messages[0]?.content[0],
+      { type: "video", source: { type: "url", url: "ms://file-extension-test" } },
+    );
 
     const textContext = {
       ...context,

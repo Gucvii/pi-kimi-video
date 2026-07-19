@@ -9,7 +9,7 @@ export interface VideoAsset {
   version: "v1";
   fileId: string;
   msUri: string;
-  provider: "moonshotai" | "moonshotai-cn";
+  provider: "kimi-coding" | "moonshotai" | "moonshotai-cn";
   baseUrl: string;
   fileName: string;
   localPath: string;

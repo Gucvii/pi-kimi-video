@@ -3,13 +3,15 @@ import test from "node:test";
 import {
   assetsFromBranch,
   findReusableAsset,
+  isKimiVideoModel,
   parseMaxBytes,
   parseTimeoutMs,
   promptWithoutVideoReference,
-  rewriteChatCompletionsPayload,
+  rewriteProviderPayload,
   sanitizeTerminalText,
   singleLineTerminalText,
   validateVideoFile,
+  videoFilesBaseUrl,
   videoReferenceCandidates,
 } from "../src/logic.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
@@ -40,6 +42,18 @@ const asset: VideoAsset = {
   thumbnailBase64: null,
   prompt: "Explain it",
   createdAt: "2026-01-01T00:00:00.000Z",
+};
+
+const codingModel: ModelIdentity = {
+  provider: "kimi-coding",
+  id: "kimi-for-coding",
+  baseUrl: "https://api.kimi.com/coding",
+  api: "anthropic-messages",
+};
+const codingAsset: VideoAsset = {
+  ...asset,
+  provider: "kimi-coding",
+  baseUrl: codingModel.baseUrl,
 };
 
 test("detects video references without exposing attachment commands", () => {
@@ -88,16 +102,32 @@ test("parses the operation timeout", () => {
 
 test("injects a video_url and clean prompt into Kimi string content", () => {
   const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
-  const result = rewriteChatCompletionsPayload(payload, [asset], model);
+  const result = rewriteProviderPayload(payload, [asset], model);
   assert.deepEqual(result, { messages: [{ role: "user", content: [
     { type: "video_url", video_url: { url: "ms://file-1" } },
     { type: "text", text: "Explain it" },
   ] }] });
 });
 
+test("supports Kimi Coding video models through the Anthropic-compatible payload", () => {
+  assert.equal(isKimiVideoModel(codingModel), true);
+  assert.equal(isKimiVideoModel({ ...codingModel, id: "kimi-for-coding-highspeed" }), true);
+  assert.equal(isKimiVideoModel({ ...codingModel, id: "k3" }), true);
+  assert.equal(isKimiVideoModel({ ...codingModel, id: "k2p7" }), false);
+  assert.equal(videoFilesBaseUrl(codingModel), "https://api.kimi.com/coding/v1");
+
+  const payload = { messages: [{ role: "user", content: [{ type: "text", text: `${marker}\nExplain it` }] }] };
+  assert.deepEqual(rewriteProviderPayload(payload, [codingAsset], codingModel), {
+    messages: [{ role: "user", content: [
+      { type: "video", source: { type: "url", url: "ms://file-1" } },
+      { type: "text", text: "Explain it" },
+    ] }],
+  });
+});
+
 test("uses safe text placeholders for non-Kimi models and never emits ms URI", () => {
   const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
-  const result = rewriteChatCompletionsPayload(payload, [asset], undefined);
+  const result = rewriteProviderPayload(payload, [asset], undefined);
   const serialized = JSON.stringify(result);
   assert.match(serialized, /Video attachment unavailable/);
   assert.match(serialized, /Explain it/);
@@ -111,14 +141,14 @@ test("injects only when provider and normalized base URL match the current direc
     { ...model, baseUrl: "https://other.moonshot.ai/v1" },
   ];
   for (const mismatch of mismatches) {
-    const result = rewriteChatCompletionsPayload(payload, [asset], mismatch);
+    const result = rewriteProviderPayload(payload, [asset], mismatch);
     const serialized = JSON.stringify(result);
     assert.doesNotMatch(serialized, /ms:\/\//);
     assert.match(serialized, /Video attachment unavailable/);
     assert.match(serialized, /Keep this prompt/);
   }
 
-  const matched = JSON.stringify(rewriteChatCompletionsPayload(payload, [asset], model));
+  const matched = JSON.stringify(rewriteProviderPayload(payload, [asset], model));
   assert.match(matched, /ms:\/\/file-1/);
 });
 
@@ -126,7 +156,7 @@ test("rewrites text parts while preserving image and custom content parts", () =
   const image = { type: "image_url", image_url: { url: "data:image/png;base64,x" } };
   const tool = { type: "tool_result", value: 7 };
   const payload = { messages: [{ role: "user", content: [image, { type: "text", text: `${marker}\nPrompt` }, tool] }] };
-  const result = rewriteChatCompletionsPayload(payload, [asset], model) as { messages: Array<{ content: unknown[] }> };
+  const result = rewriteProviderPayload(payload, [asset], model) as { messages: Array<{ content: unknown[] }> };
   assert.equal(result.messages[0]?.content[0], image);
   assert.deepEqual(result.messages[0]?.content[1], { type: "video_url", video_url: { url: asset.msUri } });
   assert.equal(result.messages[0]?.content[3], tool);
@@ -138,7 +168,7 @@ test("reinjects every matching historical user message", () => {
     { role: "assistant", content: "answer" },
     { role: "user", content: `${marker}\nSecond` },
   ] };
-  const result = rewriteChatCompletionsPayload(payload, [asset], model) as { messages: Array<{ content: unknown }> };
+  const result = rewriteProviderPayload(payload, [asset], model) as { messages: Array<{ content: unknown }> };
   assert.ok(Array.isArray(result.messages[0]?.content));
   assert.ok(Array.isArray(result.messages[2]?.content));
   assert.equal(result.messages[1]?.content, "answer");
@@ -147,9 +177,9 @@ test("reinjects every matching historical user message", () => {
 test("leaves unknown markers and unknown payload shapes unchanged", () => {
   const unknown = "[[pi-kimi-video:v1:00000000-0000-0000-0000-000000000000]]\nHello";
   const payload = { messages: [{ role: "user", content: unknown }] };
-  assert.equal(rewriteChatCompletionsPayload(payload, [asset], model), payload);
+  assert.equal(rewriteProviderPayload(payload, [asset], model), payload);
   const other = { input: "not chat completions" };
-  assert.equal(rewriteChatCompletionsPayload(other, [asset], model), other);
+  assert.equal(rewriteProviderPayload(other, [asset], model), other);
 });
 
 test("removes terminal control sequences and forces untrusted list values onto one line", () => {
