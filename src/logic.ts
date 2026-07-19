@@ -175,7 +175,7 @@ export function assetsFromBranch(entries: readonly BranchEntryLike[]): VideoAsse
       continue;
     }
     if (entry.type === "message" && isRecord(entry.message)
-      && entry.message.role === "toolResult" && entry.message.toolName === "read"
+      && entry.message.role === "toolResult" && entry.message.toolName === "read_video"
       && isVideoAsset(entry.message.details)) {
       assets.push(entry.message.details);
     }

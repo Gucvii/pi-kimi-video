@@ -21,13 +21,13 @@ type MessageRenderer = (
   options: { expanded: boolean },
   theme: { bg: (_name: string, text: string) => string; fg: (_name: string, text: string) => string; bold: (text: string) => string },
 ) => unknown;
-type ReadOverride = {
+type VideoTool = {
   name: string;
   description: string;
   promptGuidelines?: string[];
   execute: (
     toolCallId: string,
-    params: { path: string; offset?: number; limit?: number },
+    params: { path: string },
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: ExtensionContext,
@@ -62,12 +62,12 @@ test("extension turns a normal video attachment into persisted Kimi context", as
   let inputHandler: InputHandler | undefined;
   let messageRenderer: MessageRenderer | undefined;
   let providerRequestHandler: ProviderRequestHandler | undefined;
-  let readOverride: ReadOverride | undefined;
+  let videoTool: VideoTool | undefined;
   const sent: SentMessage[] = [];
 
   const pi = {
     registerMessageRenderer: (_type: string, renderer: MessageRenderer) => { messageRenderer = renderer; },
-    registerTool: (tool: ReadOverride) => { readOverride = tool; },
+    registerTool: (tool: VideoTool) => { videoTool = tool; },
     on: (event: string, handler: InputHandler | ProviderRequestHandler) => {
       if (event === "input") inputHandler = handler as InputHandler;
       if (event === "before_provider_request") providerRequestHandler = handler as ProviderRequestHandler;
@@ -118,11 +118,11 @@ test("extension turns a normal video attachment into persisted Kimi context", as
   } as unknown as ExtensionContext;
 
   try {
-    assert.ok(readOverride);
-    assert.equal(readOverride.name, "read");
-    assert.match(readOverride.description, /Video files/);
-    assert.match(readOverride.promptGuidelines?.join(" ") ?? "", /Use read on a video path/);
-    const readResult = await readOverride.execute(
+    assert.ok(videoTool);
+    assert.equal(videoTool.name, "read_video");
+    assert.match(videoTool.description, /Read a local video/);
+    assert.match(videoTool.promptGuidelines?.join(" ") ?? "", /Use read_video/);
+    const readResult = await videoTool.execute(
       "read-call",
       { path: videoPath },
       undefined,
@@ -134,7 +134,7 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     assert.match(readResult.content[0]?.text ?? "", /Read video file/);
     branch = [{
       type: "message",
-      message: { role: "toolResult", toolName: "read", details: readAsset },
+      message: { role: "toolResult", toolName: "read_video", details: readAsset },
     }];
     assert.ok(inputHandler);
     const image = { type: "image", data: "base64-image", mimeType: "image/png" };

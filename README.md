@@ -7,7 +7,7 @@ No video commands, asset IDs, or original-video base64 blobs in the session. Dro
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.4.0
+pi install git:github.com/Gucvii/pi-kimi-video@v0.4.1
 pi
 ```
 
@@ -18,7 +18,6 @@ Inside Pi:
 
 This reuses the normal Kimi Coding credential and subscription path. It does not require a separate Moonshot Open Platform account.
 
-Kimi K3 is also supported, but K3 exposes only the `max` thinking level. Use `kimi-for-coding` when adjustable thinking behavior matters.
 
 ## Use
 
@@ -34,7 +33,7 @@ An explicit `@` attachment or dropped path is uploaded before the turn. A normal
 Tell me what this video shows: /Users/me/Downloads/demo.mp4
 ```
 
-For a normal path reference, the model calls Pi's existing `read` tool. This package extends that same tool to load videos natively; text and image reads still delegate to Pi's original implementation. The user never needs a video-specific command or tool name.
+For a normal path reference, the model calls the package's internal `read_video` tool. The user never needs to know or type the tool name, and existing `read` overrides remain untouched.
 
 One video is accepted per message. Supported formats: MP4, MPEG/MPG, MOV, AVI, FLV, WebM, WMV, 3GP, and 3GPP.
 
@@ -44,7 +43,7 @@ Pi currently exposes image bytes and plain text through its clipboard action, no
 
 ## Behavior
 
-- Extends Pi's existing `read` tool: video paths become native video tool results, while text and images retain the original implementation.
+- Registers a conflict-free `read_video` tool that turns local video paths into native Kimi video tool results.
 - Injects the Kimi Anthropic-compatible `{ "type": "video", "source": { "type": "url", "url": "ms://<file-id>" } }` block for `kimi-coding`.
 - Stores metadata, the `ms://` reference, and an optional small JPEG thumbnail in the Pi session; original video bytes/base64 are never persisted.
 - Reuses an upload for the same file hash, provider, and normalized endpoint.

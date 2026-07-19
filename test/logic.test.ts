@@ -114,7 +114,7 @@ test("supports Kimi Coding video models through the Anthropic-compatible payload
   });
 });
 
-test("injects video into an Anthropic tool_result produced by read", () => {
+test("injects video into an Anthropic tool_result produced by read_video", () => {
   const payload = { messages: [{
     role: "user",
     content: [{
@@ -200,11 +200,11 @@ test("removes terminal control sequences and forces untrusted list values onto o
   assert.equal(singleLineTerminalText("file\nname\r\t.mp4"), "file name .mp4");
 });
 
-test("restores assets from explicit attachments and read tool results", () => {
+test("restores assets from explicit attachments and read_video results", () => {
   const entries = [
     { type: "custom_message", customType: "other", details: asset },
     { type: "message", details: asset },
-    { type: "message", message: { role: "toolResult", toolName: "read", details: asset } },
+    { type: "message", message: { role: "toolResult", toolName: "read_video", details: asset } },
     { type: "custom_message", customType: "kimi-video", details: asset },
     { type: "custom_message", customType: "kimi-video", details: { broken: true } },
   ];

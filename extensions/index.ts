@@ -9,7 +9,6 @@ import {
   findReusableAsset,
   formatBytes,
   isKimiVideoModel,
-  isSupportedVideoPath,
   parseMaxBytes,
   parseTimeoutMs,
   rewriteProviderPayload,
@@ -59,20 +58,18 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
     return container;
   });
 
-  const baseRead = createReadToolDefinition(process.cwd());
   pi.registerTool({
-    ...baseRead,
-    description: `${baseRead.description} Video files are uploaded and returned as native Kimi video content when the selected model supports video input.`,
+    name: "read_video",
+    label: "read_video",
+    description: "Read a local video file and return it as native Kimi video content. Use this instead of bash, ffprobe, ffmpeg, or frame extraction when the user asks what a video contains.",
+    promptSnippet: "Read a local video as native multimodal content",
     promptGuidelines: [
-      ...(baseRead.promptGuidelines ?? []),
-      "Use read on a video path when the user asks about a local video; do not use ffprobe or extract frames unless the user explicitly asks for media inspection.",
+      "Use read_video whenever the user asks about a local video path; do not inspect it with bash, ffprobe, ffmpeg, or extracted frames unless the user explicitly requests media diagnostics.",
     ],
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
+    parameters: createReadToolDefinition(process.cwd()).parameters,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const rawPath = params.path.startsWith("@") ? params.path.slice(1) : params.path;
       const localPath = resolve(ctx.cwd, rawPath);
-      if (!isSupportedVideoPath(localPath)) {
-        return createReadToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
-      }
       if (!ctx.model || !isKimiVideoModel(ctx.model)) {
         throw new Error("The selected model does not support native video input.");
       }
@@ -86,7 +83,7 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
           type: "text" as const,
           text: `${asset.marker}\nRead video file [${asset.mimeType}]: ${asset.fileName}`,
         }],
-        details: asset as VideoAsset & { truncation?: never },
+        details: asset,
       };
     },
   });

@@ -1,14 +1,13 @@
 {
   "name": "pi-kimi-video",
-  "version": "0.4.0",
-  "description": "Extend Pi's read tool with native Kimi video input",
+  "version": "0.4.1",
+  "description": "Give Pi models a conflict-free native Kimi video reader",
   "type": "module",
   "license": "MIT",
   "keywords": [
     "pi-package",
     "pi",
     "kimi",
-    "moonshot",
     "video"
   ],
   "repository": {
