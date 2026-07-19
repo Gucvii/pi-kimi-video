@@ -1,13 +1,13 @@
 # pi-kimi-video
 
-Native-feeling local video attachments for Pi's existing Kimi Coding provider.
+Native-feeling local video reading for Pi's existing Kimi Coding provider.
 
-No video commands, asset IDs, or original-video base64 blobs in the session. Drop or reference a local video in the normal editor, add your question, and send.
+No video commands, attachment syntax, asset IDs, or original-video base64 blobs in the session. Mention a local video path naturally and let the model read it.
 
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.4.3
+pi install git:github.com/Gucvii/pi-kimi-video@v0.5.0
 pi
 ```
 
@@ -21,25 +21,15 @@ This reuses the normal Kimi Coding credential and subscription path. It does not
 
 ## Use
 
-There are two native paths:
-
-```text
-@./demo.mp4 Explain what changes over time.
-```
-
-An explicit `@` attachment or dropped path is uploaded and injected before the turn; the model must not call `read_video` again. A normal natural-language reference also works:
+Reference a local path in natural language:
 
 ```text
 Tell me what this video shows: /Users/me/Downloads/demo.mp4
 ```
 
-For a normal path reference, the model calls the package's internal `read_video` tool. The user never needs to know or type the tool name, and existing `read` overrides remain untouched.
+The model calls the package's internal `read_video` tool. The user never needs to know or type the tool name, and existing `read` overrides remain untouched.
 
-One video is accepted per message. Supported formats: MP4, MPEG/MPG, MOV, AVI, FLV, WebM, WMV, 3GP, and 3GPP.
-
-### Clipboard boundary
-
-Pi currently exposes image bytes and plain text through its clipboard action, not raw video-file bytes. Therefore this extension can handle a path inserted by drag/drop, `@` reference, terminal paste, or a clipboard `file://` URL, but it cannot read an opaque video blob directly from the OS clipboard without a new Pi attachment hook.
+Supported formats: MP4, MPEG/MPG, MOV, AVI, FLV, WebM, WMV, 3GP, and 3GPP.
 
 ## Behavior
 

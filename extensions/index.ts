@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { createReadToolDefinition, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Image, Text } from "@earendil-works/pi-tui";
-import { findVideoAttachment, inspectVideo, sha256File, uploadVideo } from "../src/io.ts";
+import { Container, Image, Text } from "@earendil-works/pi-tui";
+import { inspectVideo, sha256File, uploadVideo } from "../src/io.ts";
 import {
   assetsFromBranch,
   findReusableAsset,
@@ -17,48 +17,11 @@ import {
   validateVideoFile,
   videoFilesBaseUrl,
 } from "../src/logic.ts";
-import { CUSTOM_TYPE, type VideoAsset } from "../src/types.ts";
+import type { VideoAsset } from "../src/types.ts";
 
 const runtimeAssets = new Map<string, VideoAsset>();
 
 export default function kimiVideoExtension(pi: ExtensionAPI): void {
-  pi.registerMessageRenderer<VideoAsset>(CUSTOM_TYPE, (message, { expanded }, theme) => {
-    const asset = message.details;
-    if (!asset) {
-      const content = typeof message.content === "string" ? sanitizeTerminalText(message.content) : "Kimi video";
-      return new Text(content, 0, 0);
-    }
-
-    const container = new Container();
-    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-    const dimensions = typeof asset.width === "number" && typeof asset.height === "number"
-      ? `${asset.width}×${asset.height}`
-      : "unknown";
-    const duration = typeof asset.duration === "number" ? formatDuration(asset.duration) : "unknown";
-    const fileName = sanitizeTerminalText(asset.fileName);
-    const localPath = sanitizeTerminalText(asset.localPath);
-    const summary = `${theme.fg("accent", "Video")} ${theme.bold(fileName)} · ${formatBytes(asset.size)} · ${duration} · ${dimensions}`;
-    box.addChild(new Text(
-      expanded ? `${summary}\n${theme.fg("dim", localPath)}` : summary,
-      0,
-      0,
-    ));
-
-    container.addChild(box);
-    if (asset.thumbnailBase64) {
-      container.addChild(new Image(
-        asset.thumbnailBase64,
-        "image/jpeg",
-        { fallbackColor: (text) => theme.fg("dim", text) },
-        {
-          maxWidthCells: expanded ? 72 : 56,
-          maxHeightCells: expanded ? 18 : 12,
-          filename: `${singleLineTerminalText(asset.fileName)}.jpg`,
-        },
-      ));
-    }
-    return container;
-  });
 
   pi.registerTool({
     name: "read_video",
@@ -66,7 +29,7 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
     description: "Read a local video file and return it as native Kimi video content. Use this instead of bash, ffprobe, ffmpeg, or frame extraction when the user asks what a video contains.",
     promptSnippet: "Read a local video as native multimodal content",
     promptGuidelines: [
-      "Use read_video only when the user references a local video path that is not already attached as native video content. Never call read_video for a video already present in the conversation as a video attachment.",
+      "When the user asks about a local video path, call read_video instead of inferring anything from the file name. After the tool returns, analyze the native video content; if the model cannot access it, say so explicitly.",
     ],
     parameters: createReadToolDefinition(process.cwd()).parameters,
     renderShell: "self",
@@ -102,8 +65,7 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       return container;
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const rawPath = params.path.startsWith("@") ? params.path.slice(1) : params.path;
-      const localPath = resolve(ctx.cwd, rawPath);
+      const localPath = resolve(ctx.cwd, params.path);
       if (!ctx.model || !isKimiVideoModel(ctx.model)) {
         throw new Error("The selected model does not support native video input.");
       }
@@ -111,12 +73,17 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       const timeoutMs = parseTimeoutMs(process.env.PI_KIMI_VIDEO_TIMEOUT_MS);
       const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const operationSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      const asset = await prepareAsset(localPath, "", ctx, operationSignal);
+      let asset: VideoAsset;
+      try {
+        asset = await prepareAsset(localPath, "", ctx, operationSignal);
+      } catch (error) {
+        throw new Error(operationErrorMessage(error, operationSignal, timeoutMs));
+      }
       rememberAsset(asset);
       return {
         content: [{
           type: "text" as const,
-          text: `${asset.marker}\nRead video file [${asset.mimeType}]: ${asset.fileName}`,
+          text: `${asset.marker}\nNative video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.`,
         }],
         details: asset,
       };
@@ -135,61 +102,6 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => syncVideoTool(ctx.model));
   pi.on("model_select", (event) => syncVideoTool(event.model));
 
-  pi.on("input", async (event, ctx) => {
-    if (event.source === "extension") return { action: "continue" as const };
-
-    let attachment: Awaited<ReturnType<typeof findVideoAttachment>>;
-    try {
-      attachment = await findVideoAttachment(event.text, ctx.cwd);
-    } catch (error) {
-      ctx.ui.notify(sanitizeTerminalText(errorMessage(error)), "error");
-      return { action: "handled" as const };
-    }
-    if (!attachment) return { action: "continue" as const };
-
-    if (!ctx.isIdle()) {
-      ctx.ui.notify("Wait for the current turn to finish, then send the video again.", "warning");
-      return { action: "handled" as const };
-    }
-    if (!ctx.model || !isKimiVideoModel(ctx.model)) {
-      ctx.ui.notify(
-        "The selected model does not expose video input. Use kimi-coding/kimi-for-coding, kimi-coding/kimi-for-coding-highspeed, or a supported K3 model.",
-        "warning",
-      );
-      return { action: "handled" as const };
-    }
-
-    ctx.ui.setStatus("kimi-video", `Uploading ${singleLineTerminalText(basename(attachment.localPath))}…`);
-    let operationSignal: AbortSignal | undefined;
-    let timeoutMs: number | undefined;
-    try {
-      timeoutMs = parseTimeoutMs(process.env.PI_KIMI_VIDEO_TIMEOUT_MS);
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
-      operationSignal = ctx.signal ? AbortSignal.any([ctx.signal, timeoutSignal]) : timeoutSignal;
-      const asset = await prepareAsset(
-        attachment.localPath,
-        attachment.prompt,
-        ctx,
-        operationSignal,
-      );
-      rememberAsset(asset);
-      const markerText = `${asset.marker}\nVideo already attached as native content: ${asset.fileName}. Do not call read_video for this video.`;
-      pi.sendMessage({
-        customType: CUSTOM_TYPE,
-        content: markerText,
-        display: true,
-        details: asset,
-      });
-      return event.images
-        ? { action: "transform" as const, text: attachment.prompt, images: event.images }
-        : { action: "transform" as const, text: attachment.prompt };
-    } catch (error) {
-      ctx.ui.notify(sanitizeTerminalText(operationErrorMessage(error, operationSignal, timeoutMs)), "error");
-      return { action: "handled" as const };
-    } finally {
-      ctx.ui.setStatus("kimi-video", undefined);
-    }
-  });
 
   pi.on("before_provider_request", (event, ctx) =>
     rewriteProviderPayload(event.payload, getAssets(ctx), ctx.model),

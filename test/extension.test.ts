@@ -8,19 +8,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import kimiVideoExtension from "../extensions/index.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
-type InputHandler = (
-  event: { text: string; images?: unknown[]; source: string },
-  ctx: ExtensionContext,
-) => Promise<{ action: string; text?: string; images?: unknown[] }>;
 type ProviderRequestHandler = (
   event: { type: "before_provider_request"; payload: unknown },
   ctx: ExtensionContext,
 ) => unknown;
-type MessageRenderer = (
-  message: { content: string; details?: VideoAsset },
-  options: { expanded: boolean },
-  theme: { bg: (_name: string, text: string) => string; fg: (_name: string, text: string) => string; bold: (text: string) => string },
-) => unknown;
+
 type VideoTool = {
   name: string;
   description: string;
@@ -40,16 +32,6 @@ type VideoTool = {
   ) => Promise<{ content: Array<{ type: string; text?: string }>; details?: unknown }>;
 };
 
-interface SentMessage {
-  message: {
-    customType: string;
-    content: string | unknown[];
-    display: boolean;
-    details?: unknown;
-  };
-  options?: { triggerTurn?: boolean };
-}
-
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -64,30 +46,22 @@ async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-test("extension turns a normal video attachment into persisted Kimi context", async () => {
-  let inputHandler: InputHandler | undefined;
-  let messageRenderer: MessageRenderer | undefined;
+test("read_video uploads, renders, and injects a top-level native video block", async () => {
   let providerRequestHandler: ProviderRequestHandler | undefined;
   let sessionStartHandler: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
   let modelSelectHandler: ((event: { model: ModelIdentity }) => void) | undefined;
   let videoTool: VideoTool | undefined;
-  const sent: SentMessage[] = [];
   let activeTools = ["read", "bash", "read_video"];
 
   const pi = {
-    registerMessageRenderer: (_type: string, renderer: MessageRenderer) => { messageRenderer = renderer; },
     registerTool: (tool: VideoTool) => { videoTool = tool; },
     on: (event: string, handler: unknown) => {
-      if (event === "input") inputHandler = handler as InputHandler;
       if (event === "before_provider_request") providerRequestHandler = handler as ProviderRequestHandler;
       if (event === "session_start") sessionStartHandler = handler as typeof sessionStartHandler;
       if (event === "model_select") modelSelectHandler = handler as typeof modelSelectHandler;
     },
     getActiveTools: () => [...activeTools],
     setActiveTools: (tools: string[]) => { activeTools = tools; },
-    sendMessage: (message: SentMessage["message"], options?: SentMessage["options"]) => {
-      sent.push(options ? { message, options } : { message });
-    },
   } as unknown as ExtensionAPI;
   kimiVideoExtension(pi);
 
@@ -110,24 +84,15 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     api: "anthropic-messages",
     baseUrl: `http://127.0.0.1:${port}/coding`,
   };
-  let branch: Array<Record<string, unknown>> = [];
-  const notifications: Array<{ message: string; level: string }> = [];
-  const statuses: Array<string | undefined> = [];
   const context = {
     cwd: directory,
     model,
     signal: undefined,
-    isIdle: () => true,
     modelRegistry: {
       getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "local-test-key" }),
     },
-    sessionManager: {
-      getBranch: () => branch,
-    },
-    ui: {
-      notify: (message: string, level: string) => notifications.push({ message, level }),
-      setStatus: (_key: string, value: string | undefined) => statuses.push(value),
-    },
+    sessionManager: { getBranch: () => [] },
+    ui: {},
   } as unknown as ExtensionContext;
 
   try {
@@ -137,10 +102,11 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     assert.ok(modelSelectHandler);
     modelSelectHandler({ model });
     assert.match(activeTools.join(" "), /read_video/);
+
     assert.ok(videoTool);
     assert.equal(videoTool.name, "read_video");
     assert.match(videoTool.description, /Read a local video/);
-    assert.match(videoTool.promptGuidelines?.join(" ") ?? "", /only when.*not already attached/);
+    assert.match(videoTool.promptGuidelines?.join(" ") ?? "", /instead of inferring/);
     const readResult = await videoTool.execute(
       "read-call",
       { path: videoPath },
@@ -150,10 +116,12 @@ test("extension turns a normal video attachment into persisted Kimi context", as
     );
     const readAsset = readResult.details as VideoAsset;
     assert.equal(readAsset.msUri, "ms://file-extension-test");
-    assert.match(readResult.content[0]?.text ?? "", /Read video file/);
+    assert.equal(uploadPath, "/coding/v1/files");
+    assert.match(readResult.content[0]?.text ?? "", /Analyze the video directly/);
+    assert.doesNotMatch(readResult.content[0]?.text ?? "", /demo clip/);
 
     assert.ok(providerRequestHandler);
-    const immediatePayload = { messages: [{
+    const payload = { messages: [{
       role: "user",
       content: [{
         type: "tool_result",
@@ -161,91 +129,32 @@ test("extension turns a normal video attachment into persisted Kimi context", as
         content: readResult.content,
       }],
     }] };
-    const immediateResult = providerRequestHandler(
-      { type: "before_provider_request", payload: immediatePayload },
+    const injected = providerRequestHandler(
+      { type: "before_provider_request", payload },
       context,
-    );
-    assert.match(JSON.stringify(immediateResult), /"type":"video"/);
-    assert.doesNotMatch(JSON.stringify(immediateResult), /\[\[pi-kimi-video/);
+    ) as { messages: Array<{ content: unknown[] }> };
+    assert.deepEqual(injected.messages[0]?.content, [
+      {
+        type: "tool_result",
+        tool_use_id: "read-call",
+        content: [{
+          type: "text",
+          text: "Native video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.",
+        }],
+      },
+      { type: "video", source: { type: "url", url: "ms://file-extension-test" } },
+    ]);
+    assert.doesNotMatch(JSON.stringify(injected), /pi-kimi-video/);
 
     assert.equal(videoTool.renderShell, "self");
     assert.ok(videoTool.renderResult);
-    const renderedTool = videoTool.renderResult(
+    const rendered = videoTool.renderResult(
       { details: { ...readAsset, thumbnailBase64: "AA==" } },
       { expanded: false },
       { fg: (_name, text) => text, bold: (text) => text },
     ) as { children: unknown[] };
-    assert.equal(renderedTool.children.length, 2);
-    assert.equal(renderedTool.children[1]?.constructor.name, "Image");
-    branch = [{
-      type: "message",
-      message: { role: "toolResult", toolName: "read_video", details: readAsset },
-    }];
-    assert.ok(inputHandler);
-    const image = { type: "image", data: "base64-image", mimeType: "image/png" };
-    const result = await inputHandler(
-      { text: '@"demo clip.mp4" Explain the visible behavior.', images: [image], source: "interactive" },
-      context,
-    );
-    assert.deepEqual(result, {
-      action: "transform",
-      text: "Explain the visible behavior.",
-      images: [image],
-    });
-    assert.deepEqual(notifications, []);
-    assert.equal(statuses.at(-1), undefined);
-    assert.equal(uploadPath, "/coding/v1/files");
-    assert.equal(sent.length, 1);
-    const first = sent[0];
-    assert.ok(first);
-    assert.equal(first.message.customType, "kimi-video");
-    assert.equal(first.message.display, true);
-    assert.equal(first.options, undefined);
-    assert.equal(typeof first.message.content, "string");
-    const asset = first.message.details as VideoAsset;
-    assert.equal(asset.msUri, "ms://file-extension-test");
-    assert.equal(asset.localPath, videoPath);
-    assert.doesNotMatch(JSON.stringify(first), /small fake video payload/);
-
-    assert.ok(messageRenderer);
-    const rendered = messageRenderer(
-      { content: "", details: { ...asset, thumbnailBase64: "AA==" } },
-      { expanded: false },
-      {
-        bg: (_name, text) => text,
-        fg: (_name, text) => text,
-        bold: (text) => text,
-      },
-    ) as { children: unknown[] };
     assert.equal(rendered.children.length, 2);
     assert.equal(rendered.children[1]?.constructor.name, "Image");
-
-    branch = [{ type: "custom_message", customType: "kimi-video", details: asset }];
-    assert.ok(providerRequestHandler);
-    const originalPayload = {
-      messages: [{ role: "user", content: [{ type: "text", text: first.message.content }] }],
-    };
-    const kimiPayload = providerRequestHandler(
-      { type: "before_provider_request", payload: originalPayload },
-      context,
-    );
-    assert.deepEqual(
-      (kimiPayload as { messages: Array<{ content: unknown[] }> }).messages[0]?.content[0],
-      { type: "video", source: { type: "url", url: "ms://file-extension-test" } },
-    );
-
-    const textContext = {
-      ...context,
-      model: { provider: "openai", id: "text-only", api: "openai-completions", baseUrl: "https://example.test/v1" },
-    } as unknown as ExtensionContext;
-    const textPayload = providerRequestHandler(
-      { type: "before_provider_request", payload: originalPayload },
-      textContext,
-    );
-    const serializedTextPayload = JSON.stringify(textPayload);
-    assert.match(serializedTextPayload, /Video attachment omitted/);
-    assert.doesNotMatch(serializedTextPayload, /ms:\/\//);
-    assert.doesNotMatch(serializedTextPayload, /pi-kimi-video/);
   } finally {
     await close(server);
     await rm(directory, { recursive: true, force: true });

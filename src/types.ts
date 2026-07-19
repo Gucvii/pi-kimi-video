@@ -1,6 +1,3 @@
-export const CUSTOM_TYPE = "kimi-video";
-export const MARKER_VERSION = "v1";
-export const DEFAULT_PROMPT = "Describe this video in detail.";
 export const DEFAULT_MAX_BYTES = 512 * 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -33,7 +30,6 @@ export interface ModelIdentity {
 
 export interface BranchEntryLike {
   type?: unknown;
-  customType?: unknown;
   details?: unknown;
   message?: unknown;
 }

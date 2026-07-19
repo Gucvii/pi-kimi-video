@@ -1,12 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, openAsBlob } from "node:fs";
-import { stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename } from "node:path";
 import { promisify } from "node:util";
-import { promptWithoutVideoReference, videoReferenceCandidates } from "./logic.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,50 +11,6 @@ export interface MediaMetadata {
   width?: number;
   height?: number;
   thumbnailBase64?: string;
-}
-
-export interface VideoAttachment {
-  localPath: string;
-  prompt: string;
-}
-
-export async function findVideoAttachment(
-  input: string,
-  cwd: string,
-): Promise<VideoAttachment | undefined> {
-  const matches: Array<{ localPath: string; candidate: ReturnType<typeof videoReferenceCandidates>[number] }> = [];
-  for (const candidate of videoReferenceCandidates(input)) {
-    let localPath: string;
-    try {
-      localPath = resolveLocalVideoPath(candidate.value, cwd);
-      const fileStat = await stat(localPath);
-      if (!fileStat.isFile()) continue;
-    } catch {
-      continue;
-    }
-    matches.push({ localPath, candidate });
-  }
-
-  if (matches.length === 0) return undefined;
-  if (matches.length > 1) {
-    throw new Error("Attach one video per message.");
-  }
-  const match = matches[0];
-  if (!match) return undefined;
-  return {
-    localPath: match.localPath,
-    prompt: promptWithoutVideoReference(input, match.candidate),
-  };
-}
-
-function resolveLocalVideoPath(value: string, cwd: string): string {
-  if (value.startsWith("file://")) return fileURLToPath(new URL(value));
-  const expanded = value === "~"
-    ? homedir()
-    : value.startsWith("~/") || value.startsWith("~\\")
-      ? `${homedir()}${value.slice(1)}`
-      : value;
-  return resolve(cwd, expanded);
 }
 
 export async function sha256File(path: string, signal: AbortSignal | undefined): Promise<string> {

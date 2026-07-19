@@ -6,13 +6,11 @@ import {
   isKimiVideoModel,
   parseMaxBytes,
   parseTimeoutMs,
-  promptWithoutVideoReference,
   rewriteProviderPayload,
   sanitizeTerminalText,
   singleLineTerminalText,
   validateVideoFile,
   videoFilesBaseUrl,
-  videoReferenceCandidates,
 } from "../src/logic.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
@@ -44,33 +42,6 @@ const asset: VideoAsset = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-
-test("detects video references without exposing attachment commands", () => {
-  const quoted = 'Explain @"/tmp/my clip.mp4" carefully';
-  const [quotedCandidate] = videoReferenceCandidates(quoted);
-  assert.deepEqual(quotedCandidate, {
-    value: "/tmp/my clip.mp4",
-    start: 8,
-    end: quoted.indexOf(" carefully"),
-  });
-  assert.equal(
-    promptWithoutVideoReference(quoted, quotedCandidate!),
-    "Explain carefully",
-  );
-
-  assert.equal(
-    videoReferenceCandidates("/tmp/my\\ clip.mp4 describe it")[0]?.value,
-    "/tmp/my clip.mp4",
-  );
-  assert.equal(
-    videoReferenceCandidates("C:\\videos\\clip.mp4 describe it")[0]?.value,
-    "C:\\videos\\clip.mp4",
-  );
-  assert.equal(
-    promptWithoutVideoReference("@clip.mp4", videoReferenceCandidates("@clip.mp4")[0]!),
-    "Describe this video in detail.",
-  );
-});
 
 test("validates formats and size limits", () => {
   assert.equal(validateVideoFile("MOVIE.MP4", 10, 20), "video/mp4");
@@ -124,14 +95,14 @@ test("injects video into an Anthropic tool_result produced by read_video", () =>
     }],
   }] };
   assert.deepEqual(rewriteProviderPayload(payload, [asset], model), {
-    messages: [{ role: "user", content: [{
-      type: "tool_result",
-      tool_use_id: "call-1",
-      content: [
-        { type: "video", source: { type: "url", url: "ms://file-1" } },
-        { type: "text", text: "Read video file" },
-      ],
-    }] }],
+    messages: [{ role: "user", content: [
+      {
+        type: "tool_result",
+        tool_use_id: "call-1",
+        content: [{ type: "text", text: "Read video file" }],
+      },
+      { type: "video", source: { type: "url", url: "ms://file-1" } },
+    ] }],
   });
 });
 
@@ -227,15 +198,13 @@ test("removes terminal control sequences and forces untrusted list values onto o
   assert.equal(singleLineTerminalText("file\nname\r\t.mp4"), "file name .mp4");
 });
 
-test("restores assets from explicit attachments and read_video results", () => {
+test("restores assets from read_video tool results", () => {
   const entries = [
-    { type: "custom_message", customType: "other", details: asset },
     { type: "message", details: asset },
     { type: "message", message: { role: "toolResult", toolName: "read_video", details: asset } },
-    { type: "custom_message", customType: "kimi-video", details: asset },
-    { type: "custom_message", customType: "kimi-video", details: { broken: true } },
+    { type: "message", message: { role: "toolResult", toolName: "other", details: asset } },
   ];
-  assert.deepEqual(assetsFromBranch(entries), [asset, asset]);
+  assert.deepEqual(assetsFromBranch(entries), [asset]);
 });
 
 test("finds reusable uploads by provider, normalized base URL, and hash", () => {

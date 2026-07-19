@@ -1,8 +1,6 @@
 import { extname } from "node:path";
 import {
-  CUSTOM_TYPE,
   DEFAULT_MAX_BYTES,
-  DEFAULT_PROMPT,
   DEFAULT_TIMEOUT_MS,
   MARKER_PATTERN,
   type BranchEntryLike,
@@ -28,79 +26,6 @@ export function isKimiVideoModel(model: ModelIdentity | undefined): boolean {
 export function videoFilesBaseUrl(model: ModelIdentity): string {
   const baseUrl = normalizeBaseUrl(model.baseUrl);
   return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
-}
-
-export interface VideoReferenceCandidate {
-  value: string;
-  start: number;
-  end: number;
-}
-
-export function videoReferenceCandidates(input: string): VideoReferenceCandidate[] {
-  const candidates: VideoReferenceCandidate[] = [];
-  let index = 0;
-  while (index < input.length) {
-    while (/\s/.test(input[index] ?? "")) index++;
-    if (index >= input.length) break;
-
-    const start = index;
-    let value = "";
-    let quote: "\"" | "'" | undefined;
-    while (index < input.length) {
-      const char = input[index];
-      if (char === undefined) break;
-      if (quote) {
-        if (char === quote) {
-          quote = undefined;
-          index++;
-          continue;
-        }
-        if (char === "\\" && input[index + 1] === quote) {
-          value += quote;
-          index += 2;
-          continue;
-        }
-        value += char;
-        index++;
-        continue;
-      }
-      if (/\s/.test(char)) break;
-      if (char === "\"" || char === "'") {
-        quote = char;
-        index++;
-        continue;
-      }
-      if (char === "\\" && index + 1 < input.length) {
-        const next = input[index + 1] ?? "";
-        if (/\s/.test(next) || next === "\\" || next === "\"" || next === "'") {
-          value += next;
-          index += 2;
-          continue;
-        }
-      }
-      value += char;
-      index++;
-    }
-
-    const pathValue = value.startsWith("@") ? value.slice(1) : value;
-    if (isSupportedVideoPath(pathValue)) {
-      candidates.push({ value: pathValue, start, end: index });
-    }
-  }
-  return candidates;
-}
-
-export function promptWithoutVideoReference(
-  input: string,
-  candidate: VideoReferenceCandidate,
-): string {
-  const before = input.slice(0, candidate.start).trimEnd();
-  const after = input.slice(candidate.end).trimStart();
-  return [before, after].filter(Boolean).join(" ").trim() || DEFAULT_PROMPT;
-}
-
-export function isSupportedVideoPath(value: string): boolean {
-  return EXTENSION_MIME.has(extname(value).toLowerCase());
 }
 
 export function parseMaxBytes(value: string | undefined): number {
@@ -170,10 +95,6 @@ export function isVideoAsset(value: unknown): value is VideoAsset {
 export function assetsFromBranch(entries: readonly BranchEntryLike[]): VideoAsset[] {
   const assets: VideoAsset[] = [];
   for (const entry of entries) {
-    if (entry.type === "custom_message" && entry.customType === CUSTOM_TYPE && isVideoAsset(entry.details)) {
-      assets.push(entry.details);
-      continue;
-    }
     if (entry.type === "message" && isRecord(entry.message)
       && entry.message.role === "toolResult" && entry.message.toolName === "read_video"
       && isVideoAsset(entry.message.details)) {
@@ -228,6 +149,7 @@ function transformContentParts(
 ): { content: unknown[]; changed: boolean } {
   let changed = false;
   const content: unknown[] = [];
+  const hoistedVideos: PayloadPart[] = [];
   for (const part of parts) {
     if (isRecord(part) && part.type === "text" && typeof part.text === "string") {
       const transformed = transformText(part.text, assets, model);
@@ -237,10 +159,11 @@ function transformContentParts(
       continue;
     }
     if (isRecord(part) && part.type === "tool_result" && Array.isArray(part.content)) {
-      const nested = transformContentParts(part.content, assets, model);
+      const nested = transformToolResultContent(part.content, assets, model);
       if (nested.changed) {
         changed = true;
         content.push({ ...part, content: nested.content });
+        hoistedVideos.push(...nested.videos);
       } else {
         content.push(part);
       }
@@ -248,7 +171,38 @@ function transformContentParts(
     }
     content.push(part);
   }
-  return { content, changed };
+  return { content: [...content, ...hoistedVideos], changed };
+}
+
+function transformToolResultContent(
+  parts: readonly unknown[],
+  assets: ReadonlyMap<string, VideoAsset>,
+  model: ModelIdentity | undefined,
+): { content: unknown[]; videos: PayloadPart[]; changed: boolean } {
+  let changed = false;
+  const content: unknown[] = [];
+  const videos: PayloadPart[] = [];
+  for (const part of parts) {
+    if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") {
+      content.push(part);
+      continue;
+    }
+    const transformed = transformText(part.text, assets, model);
+    if (transformed === part.text) {
+      content.push(part);
+      continue;
+    }
+    changed = true;
+    if (typeof transformed === "string") {
+      content.push({ ...part, text: transformed });
+      continue;
+    }
+    for (const transformedPart of transformed) {
+      if (transformedPart.type === "video") videos.push(transformedPart);
+      else if (transformedPart.text) content.push({ ...part, text: transformedPart.text });
+    }
+  }
+  return { content, videos, changed };
 }
 
 function transformText(
