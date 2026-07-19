@@ -1,0 +1,40 @@
+{
+  "name": "pi-kimi-video",
+  "version": "0.1.0",
+  "description": "Upload local videos to Kimi K3 from Pi without storing video data in sessions",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "kimi", "moonshot", "video"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gucvii/pi-kimi-video.git"
+  },
+  "homepage": "https://github.com/Gucvii/pi-kimi-video#readme",
+  "bugs": {
+    "url": "https://github.com/Gucvii/pi-kimi-video/issues"
+  },
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "check": "tsc --noEmit && npm test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@earendil-works/pi-tui": "0.80.10",
+    "@types/node": "24.12.4",
+    "typescript": "5.9.3"
+  },
+  "files": ["extensions", "src", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public"
+  }
+}

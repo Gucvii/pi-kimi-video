@@ -1,0 +1,170 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  assetsFromBranch,
+  findAssetByMarker,
+  findReusableAsset,
+  parseMaxBytes,
+  parseRecallArgs,
+  parseTimeoutMs,
+  parseVideoArgs,
+  rewriteChatCompletionsPayload,
+  sanitizeTerminalText,
+  singleLineTerminalText,
+  validateVideoFile,
+} from "../src/logic.ts";
+import type { ModelIdentity, VideoAsset } from "../src/types.ts";
+
+const marker = "[[pi-kimi-video:v1:123e4567-e89b-12d3-a456-426614174000]]";
+const model: ModelIdentity = {
+  provider: "moonshotai",
+  id: "kimi-k3",
+  baseUrl: "https://api.moonshot.ai/v1/",
+  api: "openai-completions",
+};
+
+const asset: VideoAsset = {
+  marker,
+  version: "v1",
+  fileId: "file-1",
+  msUri: "ms://file-1",
+  provider: "moonshotai",
+  baseUrl: "https://api.moonshot.ai/v1",
+  fileName: "clip.mp4",
+  localPath: "/tmp/clip.mp4",
+  hash: "abc",
+  mimeType: "video/mp4",
+  size: 1024,
+  duration: 2,
+  width: 1920,
+  height: 1080,
+  thumbnailBase64: null,
+  prompt: "Explain it",
+  createdAt: "2026-01-01T00:00:00.000Z",
+};
+
+test("parses quoted paths, escaped spaces, and the default prompt", () => {
+  assert.deepEqual(parseVideoArgs('  "folder/my clip.mp4" focus on motion'), {
+    path: "folder/my clip.mp4", prompt: "focus on motion",
+  });
+  assert.deepEqual(parseVideoArgs("folder/my\\ clip.mp4"), {
+    path: "folder/my clip.mp4", prompt: "Describe this video in detail.",
+  });
+  assert.throws(() => parseVideoArgs('"broken.mp4'), /unterminated/);
+});
+
+test("parses recall marker prefixes and optional prompts", () => {
+  assert.deepEqual(parseRecallArgs("123e4567 new prompt with spaces"), {
+    id: "123e4567", prompt: "new prompt with spaces",
+  });
+  assert.deepEqual(parseRecallArgs(marker), { id: marker });
+  assert.equal(findAssetByMarker([asset], "123e4567"), asset);
+  assert.throws(() => parseRecallArgs("  "), /Usage/);
+});
+
+test("validates formats and size limits", () => {
+  assert.equal(validateVideoFile("MOVIE.MP4", 10, 20), "video/mp4");
+  assert.equal(validateVideoFile("movie.3gpp", 10, 20), "video/3gpp");
+  assert.throws(() => validateVideoFile("movie.mkv", 10, 20), /Unsupported/);
+  assert.throws(() => validateVideoFile("movie.mp4", 21, 20), /exceeding/);
+  assert.equal(parseMaxBytes(undefined), 512 * 1024 * 1024);
+  assert.throws(() => parseMaxBytes("0"), /positive integer/);
+});
+
+test("parses the operation timeout", () => {
+  assert.equal(parseTimeoutMs(undefined), 15 * 60 * 1000);
+  assert.equal(parseTimeoutMs("12345"), 12345);
+  for (const invalid of ["0", "-1", "1.5", "Infinity", "nope"]) {
+    assert.throws(() => parseTimeoutMs(invalid), /positive integer/);
+  }
+});
+
+test("injects a video_url and clean prompt into Kimi string content", () => {
+  const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
+  const result = rewriteChatCompletionsPayload(payload, [asset], model);
+  assert.deepEqual(result, { messages: [{ role: "user", content: [
+    { type: "video_url", video_url: { url: "ms://file-1" } },
+    { type: "text", text: "Explain it" },
+  ] }] });
+});
+
+test("uses safe text placeholders for non-Kimi models and never emits ms URI", () => {
+  const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
+  const result = rewriteChatCompletionsPayload(payload, [asset], undefined);
+  const serialized = JSON.stringify(result);
+  assert.match(serialized, /Video attachment unavailable/);
+  assert.match(serialized, /Explain it/);
+  assert.doesNotMatch(serialized, /ms:\/\//);
+});
+
+test("injects only when provider and normalized base URL match the current direct Kimi endpoint", () => {
+  const payload = { messages: [{ role: "user", content: `${marker}\nKeep this prompt` }] };
+  const mismatches: ModelIdentity[] = [
+    { ...model, provider: "moonshotai-cn" },
+    { ...model, baseUrl: "https://other.moonshot.ai/v1" },
+  ];
+  for (const mismatch of mismatches) {
+    const result = rewriteChatCompletionsPayload(payload, [asset], mismatch);
+    const serialized = JSON.stringify(result);
+    assert.doesNotMatch(serialized, /ms:\/\//);
+    assert.match(serialized, /Video attachment unavailable/);
+    assert.match(serialized, /Keep this prompt/);
+  }
+
+  const matched = JSON.stringify(rewriteChatCompletionsPayload(payload, [asset], model));
+  assert.match(matched, /ms:\/\/file-1/);
+});
+
+test("rewrites text parts while preserving image and custom content parts", () => {
+  const image = { type: "image_url", image_url: { url: "data:image/png;base64,x" } };
+  const tool = { type: "tool_result", value: 7 };
+  const payload = { messages: [{ role: "user", content: [image, { type: "text", text: `${marker}\nPrompt` }, tool] }] };
+  const result = rewriteChatCompletionsPayload(payload, [asset], model) as { messages: Array<{ content: unknown[] }> };
+  assert.equal(result.messages[0]?.content[0], image);
+  assert.deepEqual(result.messages[0]?.content[1], { type: "video_url", video_url: { url: asset.msUri } });
+  assert.equal(result.messages[0]?.content[3], tool);
+});
+
+test("reinjects every matching historical user message", () => {
+  const payload = { messages: [
+    { role: "user", content: `${marker}\nFirst` },
+    { role: "assistant", content: "answer" },
+    { role: "user", content: `${marker}\nSecond` },
+  ] };
+  const result = rewriteChatCompletionsPayload(payload, [asset], model) as { messages: Array<{ content: unknown }> };
+  assert.ok(Array.isArray(result.messages[0]?.content));
+  assert.ok(Array.isArray(result.messages[2]?.content));
+  assert.equal(result.messages[1]?.content, "answer");
+});
+
+test("leaves unknown markers and unknown payload shapes unchanged", () => {
+  const unknown = "[[pi-kimi-video:v1:00000000-0000-0000-0000-000000000000]]\nHello";
+  const payload = { messages: [{ role: "user", content: unknown }] };
+  assert.equal(rewriteChatCompletionsPayload(payload, [asset], model), payload);
+  const other = { input: "not chat completions" };
+  assert.equal(rewriteChatCompletionsPayload(other, [asset], model), other);
+});
+
+test("removes terminal control sequences and forces untrusted list values onto one line", () => {
+  const malicious = "safe\u001b]8;;https://evil.test\u0007link\u001b]8;;\u0007\nnext\u001b[31mred\u001b[0m\u009b2J";
+  const cleaned = sanitizeTerminalText(malicious);
+  assert.equal(cleaned, "safelink nextred");
+  assert.doesNotMatch(cleaned, /[\u0000-\u001F\u007F-\u009F]/);
+  assert.equal(singleLineTerminalText("file\nname\r\t.mp4"), "file name .mp4");
+});
+
+test("restores assets only from active branch custom messages", () => {
+  const entries = [
+    { type: "custom_message", customType: "other", details: asset },
+    { type: "message", details: asset },
+    { type: "custom_message", customType: "kimi-video", details: asset },
+    { type: "custom_message", customType: "kimi-video", details: { broken: true } },
+  ];
+  assert.deepEqual(assetsFromBranch(entries), [asset]);
+});
+
+test("finds reusable uploads by provider, normalized base URL, and hash", () => {
+  assert.equal(findReusableAsset([asset], "moonshotai", "https://api.moonshot.ai/v1/", "abc"), asset);
+  assert.equal(findReusableAsset([asset], "moonshotai-cn", asset.baseUrl, "abc"), undefined);
+  assert.equal(findReusableAsset([asset], "moonshotai", asset.baseUrl, "different"), undefined);
+});
