@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { createReadToolDefinition, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { inspectVideo, sha256File, uploadVideo } from "../src/io.ts";
 import {
@@ -11,7 +12,6 @@ import {
   isKimiVideoModel,
   parseMaxBytes,
   parseTimeoutMs,
-  rewriteProviderPayload,
   sanitizeTerminalText,
   validateVideoFile,
   videoFilesBaseUrl,
@@ -25,18 +25,27 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "read_video",
     label: "read_video",
-    description: "Read a local video file and return it as native Kimi video content. Use this instead of bash, ffprobe, ffmpeg, or frame extraction when the user asks what a video contains.",
-    promptSnippet: "Read a local video as native multimodal content",
+    description: "Read and analyze one local video with Kimi's video-capable OpenAI endpoint. Call it once per video when the user asks about one or more video paths.",
+    promptSnippet: "Analyze a local video with Kimi vision",
     promptGuidelines: [
-      "When the user asks about a local video path, call read_video instead of inferring anything from the file name. After the tool returns, analyze the native video content; if the model cannot access it, say so explicitly.",
+      "When the user asks about local video paths, call read_video once for each video. Pass the user's actual question in prompt. Never infer video content from a file name.",
     ],
-    parameters: createReadToolDefinition(process.cwd()).parameters,
+    parameters: Type.Object({
+      path: Type.String({ description: "Local video path, relative or absolute" }),
+      prompt: Type.Optional(Type.String({ description: "What the user wants to know about this video" })),
+    }),
     renderCall(args, theme) {
       return new Text(`${theme.fg("toolTitle", theme.bold("read_video"))} ${sanitizeTerminalText(args.path)}`, 0, 0);
     },
     renderResult(result, { expanded }, theme) {
       const asset = result.details as VideoAsset | undefined;
-      if (!asset) return new Text(theme.fg("error", "Video read failed"), 0, 0);
+      if (!asset) {
+        const message = result.content
+          .filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
+          .map((part) => part.text)
+          .join("\n") || "Video analysis failed";
+        return new Text(theme.fg("error", sanitizeTerminalText(message)), 0, 0);
+      }
       const dimensions = asset.width !== null && asset.height !== null
         ? `${asset.width}×${asset.height}`
         : "unknown";
@@ -59,13 +68,24 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
       const operationSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
       let asset: VideoAsset;
       try {
-        asset = await prepareAsset(localPath, "", ctx, operationSignal);
+        asset = await prepareAsset(localPath, params.prompt ?? "", ctx, operationSignal);
       } catch (error) {
         throw new Error(operationErrorMessage(error, operationSignal, timeoutMs));
       }
       rememberAsset(asset);
+      let analysis: string;
+      try {
+        analysis = await analyzeVideo(
+          asset,
+          params.prompt?.trim() || "Describe only what visibly happens in this video. Do not infer from its file name.",
+          ctx,
+          operationSignal,
+        );
+      } catch (error) {
+        throw new Error(operationErrorMessage(error, operationSignal, timeoutMs));
+      }
       return {
-        content: createVideoToolContent(asset),
+        content: createVideoToolContent(asset, analysis),
         details: asset,
       };
     },
@@ -83,22 +103,83 @@ export default function kimiVideoExtension(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => syncVideoTool(ctx.model));
   pi.on("model_select", (event) => syncVideoTool(event.model));
 
-
-  pi.on("before_provider_request", (event, ctx) =>
-    rewriteProviderPayload(event.payload, getAssets(ctx), ctx.model),
-  );
 }
 
-export function createVideoToolContent(asset: VideoAsset) {
+export function createVideoToolContent(asset: VideoAsset, analysis: string) {
   return [
-    {
-      type: "text" as const,
-      text: `${asset.marker}\nNative video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.`,
-    },
+    { type: "text" as const, text: analysis },
     ...(asset.thumbnailBase64
       ? [{ type: "image" as const, data: asset.thumbnailBase64, mimeType: "image/jpeg" }]
       : []),
   ];
+}
+
+async function analyzeVideo(
+  asset: VideoAsset,
+  prompt: string,
+  ctx: ExtensionContext,
+  signal: AbortSignal,
+): Promise<string> {
+  if (!ctx.model || !isKimiVideoModel(ctx.model)) {
+    throw new Error("The selected model no longer exposes Kimi video analysis.");
+  }
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+  if (!auth.ok) throw new Error(`Kimi authentication unavailable: ${auth.error}`);
+  if (!auth.apiKey && !hasAuthorization(auth.headers)) {
+    throw new Error(`Kimi authentication is missing. Run /login ${ctx.model.provider} and try again.`);
+  }
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "User-Agent": "pi-kimi-video/0.6.0",
+    ...(auth.headers ?? {}),
+  };
+  if (auth.apiKey && !hasAuthorization(headers)) headers.Authorization = `Bearer ${auth.apiKey}`;
+  const response = await fetch(`${videoFilesBaseUrl(ctx.model)}/chat/completions`, {
+    method: "POST",
+    headers,
+    signal,
+    body: JSON.stringify({
+      model: ctx.model.id,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "video_url", video_url: { url: asset.msUri } },
+          { type: "text", text: prompt },
+        ],
+      }],
+      max_completion_tokens: 4096,
+      stream: false,
+    }),
+  });
+  const body = await response.text();
+  let parsed: unknown;
+  try { parsed = JSON.parse(body); } catch { parsed = undefined; }
+  if (!response.ok) throw new Error(formatAnalysisError(response.status, parsed, body));
+  if (!isRecord(parsed)) throw new Error("Kimi video analysis returned an invalid JSON response.");
+  const choices = parsed.choices;
+  const first = Array.isArray(choices) ? choices[0] : undefined;
+  const message = isRecord(first) && isRecord(first.message) ? first.message : undefined;
+  const content = message && typeof message.content === "string" ? message.content.trim() : "";
+  if (!content) {
+    const finishReason = isRecord(first) && typeof first.finish_reason === "string" ? first.finish_reason : "unknown";
+    throw new Error(`Kimi video analysis returned no answer (finish_reason=${finishReason}).`);
+  }
+  return content;
+}
+
+function formatAnalysisError(status: number, parsed: unknown, raw: string): string {
+  let detail: string | undefined;
+  if (isRecord(parsed)) {
+    if (typeof parsed.message === "string") detail = parsed.message;
+    else if (isRecord(parsed.error) && typeof parsed.error.message === "string") detail = parsed.error.message;
+    else if (typeof parsed.error === "string") detail = parsed.error;
+  }
+  if (!detail && raw.trim()) detail = raw.trim().slice(0, 500);
+  return `Kimi video analysis failed (HTTP ${status})${detail ? `: ${detail}` : "."}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function prepareAsset(
@@ -190,7 +271,7 @@ function operationErrorMessage(
   timeoutMs: number | undefined,
 ): string {
   if (hasErrorName(signal?.reason, "TimeoutError") || hasErrorName(error, "TimeoutError")) {
-    return `Video upload timed out after ${timeoutMs ?? "the configured timeout"} ms. Adjust PI_KIMI_VIDEO_TIMEOUT_MS and try again.`;
+    return `Video operation timed out after ${timeoutMs ?? "the configured timeout"} ms. Adjust PI_KIMI_VIDEO_TIMEOUT_MS and try again.`;
   }
   if (signal?.aborted || hasErrorName(error, "AbortError")) {
     return "Video upload was aborted before it completed.";

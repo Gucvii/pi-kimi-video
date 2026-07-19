@@ -7,7 +7,7 @@ No video commands, attachment syntax, asset IDs, or original-video base64 blobs 
 ## Install
 
 ```bash
-pi install git:github.com/Gucvii/pi-kimi-video@v0.5.1
+pi install git:github.com/Gucvii/pi-kimi-video@v0.6.0
 pi
 ```
 
@@ -27,18 +27,18 @@ Reference a local path in natural language:
 Tell me what this video shows: /Users/me/Downloads/demo.mp4
 ```
 
-The model calls the package's internal `read_video` tool. The user never needs to know or type the tool name, and existing `read` overrides remain untouched.
+The model calls the package's internal `read_video` tool and passes the user's question to it. For multiple paths, it can call the tool once per video. The user never needs to type the tool name, and existing `read` overrides remain untouched.
 
 Supported formats: MP4, MPEG/MPG, MOV, AVI, FLV, WebM, WMV, 3GP, and 3GPP.
 
 ## Behavior
 
+- Never intercepts or blocks user input. Video-looking text remains ordinary text on every model.
 - Registers a conflict-free `read_video` tool only while a supported `kimi-coding` model is selected.
-- Injects the Kimi Anthropic-compatible `{ "type": "video", "source": { "type": "url", "url": "ms://<file-id>" } }` block for `kimi-coding`.
-- Stores metadata, the `ms://` reference, and an optional small JPEG thumbnail in the Pi session; original video bytes/base64 are never persisted.
+- Uploads through Kimi Files and analyzes through the official OpenAI-compatible `video_url` format at `/coding/v1/chat/completions`.
+- Returns the actual video analysis as an ordinary tool result, so it survives session reloads and model switches.
 - Reuses an upload for the same file hash, provider, and normalized endpoint.
-- Preserves video context across session reloads and model switches.
-- Gives unsupported models a safe text placeholder; switching back to the original Kimi endpoint restores the native video part.
+- Restores reusable asset metadata from historical `read_video` results.
 - Returns the optional ffmpeg thumbnail as a standard Pi image tool result, using Pi's native terminal capability detection, Kitty PNG conversion, visibility settings, and fallback rendering.
 - Shows duration and dimensions when optional ffprobe metadata is available.
 

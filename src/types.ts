@@ -33,5 +33,3 @@ export interface BranchEntryLike {
   details?: unknown;
   message?: unknown;
 }
-
-export const MARKER_PATTERN = /\[\[pi-kimi-video:v1:[0-9a-f-]+\]\]/gi;

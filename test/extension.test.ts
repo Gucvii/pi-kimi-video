@@ -8,24 +8,18 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import kimiVideoExtension, { createVideoToolContent } from "../extensions/index.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
-type ProviderRequestHandler = (
-  event: { type: "before_provider_request"; payload: unknown },
-  ctx: ExtensionContext,
-) => unknown;
-
 type VideoTool = {
   name: string;
   description: string;
   promptGuidelines?: string[];
-  renderShell?: string;
   renderResult?: (
-    result: { details?: unknown },
+    result: { content: Array<{ type: string; text?: string }>; details?: unknown },
     options: { expanded: boolean },
     theme: { fg: (_name: string, text: string) => string; bold: (text: string) => string },
   ) => unknown;
   execute: (
     toolCallId: string,
-    params: { path: string },
+    params: { path: string; prompt?: string },
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: ExtensionContext,
@@ -46,17 +40,17 @@ async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-test("read_video uploads, renders, and injects a top-level native video block", async () => {
-  let providerRequestHandler: ProviderRequestHandler | undefined;
+test("read_video uploads and analyzes through Kimi's OpenAI video endpoint", async () => {
   let sessionStartHandler: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
   let modelSelectHandler: ((event: { model: ModelIdentity }) => void) | undefined;
   let videoTool: VideoTool | undefined;
   let activeTools = ["read", "bash", "read_video"];
+  let inputHandlerRegistered = false;
 
   const pi = {
     registerTool: (tool: VideoTool) => { videoTool = tool; },
     on: (event: string, handler: unknown) => {
-      if (event === "before_provider_request") providerRequestHandler = handler as ProviderRequestHandler;
+      if (event === "input") inputHandlerRegistered = true;
       if (event === "session_start") sessionStartHandler = handler as typeof sessionStartHandler;
       if (event === "model_select") modelSelectHandler = handler as typeof modelSelectHandler;
     },
@@ -64,14 +58,24 @@ test("read_video uploads, renders, and injects a top-level native video block", 
     setActiveTools: (tools: string[]) => { activeTools = tools; },
   } as unknown as ExtensionAPI;
   kimiVideoExtension(pi);
+  assert.equal(inputHandlerRegistered, false);
 
-  let uploadPath: string | undefined;
+  const requestPaths: string[] = [];
+  let analysisRequest: Record<string, unknown> | undefined;
   const server = createServer((request, response) => {
-    uploadPath = request.url;
-    request.resume();
+    requestPaths.push(request.url ?? "");
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
     request.on("end", () => {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ id: "file-extension-test" }));
+      if (request.url?.endsWith("/chat/completions")) {
+        analysisRequest = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        response.end(JSON.stringify({
+          choices: [{ message: { content: "The video visibly shows a football detection demo." }, finish_reason: "stop" }],
+        }));
+      } else {
+        response.end(JSON.stringify({ id: "file-extension-test" }));
+      }
     });
   });
   const directory = await mkdtemp(join(tmpdir(), "pi-kimi-video-extension-"));
@@ -104,59 +108,57 @@ test("read_video uploads, renders, and injects a top-level native video block", 
     assert.match(activeTools.join(" "), /read_video/);
 
     assert.ok(videoTool);
-    assert.equal(videoTool.name, "read_video");
-    assert.match(videoTool.description, /Read a local video/);
-    assert.match(videoTool.promptGuidelines?.join(" ") ?? "", /instead of inferring/);
+    assert.match(videoTool.description, /analyze one local video/);
+    assert.match(videoTool.promptGuidelines?.join(" ") ?? "", /once for each video/);
     const readResult = await videoTool.execute(
       "read-call",
-      { path: videoPath },
+      { path: videoPath, prompt: "What happens?" },
       undefined,
       undefined,
       context,
     );
     const readAsset = readResult.details as VideoAsset;
     assert.equal(readAsset.msUri, "ms://file-extension-test");
-    assert.equal(uploadPath, "/coding/v1/files");
-    assert.match(readResult.content[0]?.text ?? "", /Analyze the video directly/);
-    assert.doesNotMatch(readResult.content[0]?.text ?? "", /demo clip/);
+    assert.deepEqual(requestPaths, ["/coding/v1/files", "/coding/v1/chat/completions"]);
+    assert.equal(readResult.content[0]?.text, "The video visibly shows a football detection demo.");
+    assert.doesNotMatch(JSON.stringify(readResult.content), /pi-kimi-video|demo clip/);
 
-    assert.ok(providerRequestHandler);
-    const payload = { messages: [{
-      role: "user",
-      content: [{
-        type: "tool_result",
-        tool_use_id: "read-call",
-        content: createVideoToolContent({ ...readAsset, thumbnailBase64: "AA==" }),
-      }],
-    }] };
-    const injected = providerRequestHandler(
-      { type: "before_provider_request", payload },
-      context,
-    ) as { messages: Array<{ content: unknown[] }> };
-    assert.deepEqual(injected.messages[0]?.content, [
-      {
-        type: "tool_result",
-        tool_use_id: "read-call",
-        content: [
-          {
-            type: "text",
-            text: "Native video content is attached to this request. Analyze the video directly. If its content is unavailable, state that explicitly; never infer content from the file name.",
-          },
-          { type: "image", data: "AA==", mimeType: "image/jpeg" },
-        ],
-      },
-      { type: "video", source: { type: "url", url: "ms://file-extension-test" } },
+    const messages = analysisRequest?.messages as Array<{ content: unknown[] }>;
+    assert.deepEqual(messages[0]?.content, [
+      { type: "video_url", video_url: { url: "ms://file-extension-test" } },
+      { type: "text", text: "What happens?" },
     ]);
-    assert.doesNotMatch(JSON.stringify(injected), /pi-kimi-video/);
 
-    assert.equal(videoTool.renderShell, undefined);
-    assert.ok(videoTool.renderResult);
-    const rendered = videoTool.renderResult(
-      { details: { ...readAsset, thumbnailBase64: "AA==" } },
-      { expanded: false },
-      { fg: (_name, text) => text, bold: (text) => text },
+    await videoTool.execute(
+      "read-call-2",
+      { path: videoPath, prompt: "Focus on the labels." },
+      undefined,
+      undefined,
+      context,
     );
-    assert.equal((rendered as { constructor: { name: string } }).constructor.name, "Text");
+    assert.deepEqual(requestPaths, [
+      "/coding/v1/files",
+      "/coding/v1/chat/completions",
+      "/coding/v1/chat/completions",
+    ]);
+    const secondMessages = analysisRequest?.messages as Array<{ content: unknown[] }>;
+    assert.deepEqual(secondMessages[0]?.content, [
+      { type: "video_url", video_url: { url: "ms://file-extension-test" } },
+      { type: "text", text: "Focus on the labels." },
+    ]);
+
+    assert.deepEqual(createVideoToolContent({ ...readAsset, thumbnailBase64: "AA==" }, "analysis"), [
+      { type: "text", text: "analysis" },
+      { type: "image", data: "AA==", mimeType: "image/jpeg" },
+    ]);
+
+    assert.ok(videoTool.renderResult);
+    const renderedError = videoTool.renderResult(
+      { content: [{ type: "text", text: "specific failure" }] },
+      { expanded: true },
+      { fg: (_name, text) => text, bold: (text) => text },
+    ) as { render: (width: number) => string[] };
+    assert.match(renderedError.render(80).join("\n"), /specific failure/);
   } finally {
     await close(server);
     await rm(directory, { recursive: true, force: true });

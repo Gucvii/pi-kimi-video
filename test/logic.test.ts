@@ -4,9 +4,9 @@ import {
   assetsFromBranch,
   findReusableAsset,
   isKimiVideoModel,
+  isVideoAsset,
   parseMaxBytes,
   parseTimeoutMs,
-  rewriteProviderPayload,
   sanitizeTerminalText,
   singleLineTerminalText,
   validateVideoFile,
@@ -14,7 +14,6 @@ import {
 } from "../src/logic.ts";
 import type { ModelIdentity, VideoAsset } from "../src/types.ts";
 
-const marker = "[[pi-kimi-video:v1:123e4567-e89b-12d3-a456-426614174000]]";
 const model: ModelIdentity = {
   provider: "kimi-coding",
   id: "kimi-for-coding",
@@ -23,7 +22,7 @@ const model: ModelIdentity = {
 };
 
 const asset: VideoAsset = {
-  marker,
+  marker: "[[pi-kimi-video:v1:123e4567-e89b-12d3-a456-426614174000]]",
   version: "v1",
   fileId: "file-1",
   msUri: "ms://file-1",
@@ -42,7 +41,6 @@ const asset: VideoAsset = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-
 test("validates formats and size limits", () => {
   assert.equal(validateVideoFile("MOVIE.MP4", 10, 20), "video/mp4");
   assert.equal(validateVideoFile("movie.3gpp", 10, 20), "video/3gpp");
@@ -60,145 +58,18 @@ test("parses the operation timeout", () => {
   }
 });
 
-test("injects native video and a clean prompt into Kimi Coding content", () => {
-  const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
-  const result = rewriteProviderPayload(payload, [asset], model);
-  assert.deepEqual(result, { messages: [{ role: "user", content: [
-    { type: "video", source: { type: "url", url: "ms://file-1" } },
-    { type: "text", text: "Explain it" },
-  ] }] });
-});
-
-test("supports Kimi Coding video models through the Anthropic-compatible payload", () => {
+test("recognizes supported Kimi Coding models and endpoints", () => {
   assert.equal(isKimiVideoModel(model), true);
   assert.equal(isKimiVideoModel({ ...model, id: "kimi-for-coding-highspeed" }), true);
   assert.equal(isKimiVideoModel({ ...model, id: "k3" }), true);
-  assert.equal(isKimiVideoModel({ ...model, id: "k2p7" }), false);
+  assert.equal(isKimiVideoModel({ ...model, id: "other" }), false);
+  assert.equal(isKimiVideoModel({ ...model, provider: "other" }), false);
   assert.equal(videoFilesBaseUrl(model), "https://api.kimi.com/coding/v1");
-
-  const payload = { messages: [{ role: "user", content: [{ type: "text", text: `${marker}\nExplain it` }] }] };
-  assert.deepEqual(rewriteProviderPayload(payload, [asset], model), {
-    messages: [{ role: "user", content: [
-      { type: "video", source: { type: "url", url: "ms://file-1" } },
-      { type: "text", text: "Explain it" },
-    ] }],
-  });
 });
 
-test("injects video into an Anthropic tool_result produced by read_video", () => {
-  const payload = { messages: [{
-    role: "user",
-    content: [{
-      type: "tool_result",
-      tool_use_id: "call-1",
-      content: [{ type: "text", text: `${marker}\nRead video file` }],
-    }],
-  }] };
-  assert.deepEqual(rewriteProviderPayload(payload, [asset], model), {
-    messages: [{ role: "user", content: [
-      {
-        type: "tool_result",
-        tool_use_id: "call-1",
-        content: [{ type: "text", text: "Read video file" }],
-      },
-      { type: "video", source: { type: "url", url: "ms://file-1" } },
-    ] }],
-  });
-});
-
-test("restores a historical read_video result after switching away and back", () => {
-  const payload = { messages: [{
-    role: "user",
-    content: [{
-      type: "tool_result",
-      tool_use_id: "call-history",
-      content: [{ type: "text", text: `${marker}\nHistorical video` }],
-    }],
-  }] };
-
-  const fallback = JSON.stringify(rewriteProviderPayload(payload, [asset], {
-    provider: "text-provider",
-    id: "text-model",
-    baseUrl: "https://text.example/v1",
-  }));
-  assert.match(fallback, /Video attachment omitted/);
-  assert.doesNotMatch(fallback, /ms:\/\//);
-  assert.doesNotMatch(fallback, /pi-kimi-video/);
-  assert.match(JSON.stringify(payload), /pi-kimi-video/);
-
-  const restored = JSON.stringify(rewriteProviderPayload(payload, [asset], model));
-  assert.match(restored, /"type":"video"/);
-  assert.match(restored, /ms:\/\/file-1/);
-  assert.doesNotMatch(restored, /pi-kimi-video/);
-});
-
-test("uses safe text placeholders for non-Kimi models and never emits ms URI", () => {
-  const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
-  const result = rewriteProviderPayload(payload, [asset], undefined);
-  const serialized = JSON.stringify(result);
-  assert.match(serialized, /Video attachment omitted/);
-  assert.match(serialized, /Explain it/);
-  assert.doesNotMatch(serialized, /ms:\/\//);
-  assert.doesNotMatch(serialized, /pi-kimi-video/);
-});
-
-test("injects only when model and normalized Kimi Coding endpoint match", () => {
-  const payload = { messages: [{ role: "user", content: `${marker}\nKeep this prompt` }] };
-  const mismatches: ModelIdentity[] = [
-    { ...model, id: "k2p7" },
-    { ...model, baseUrl: "https://other.kimi.test/coding" },
-  ];
-  for (const mismatch of mismatches) {
-    const result = rewriteProviderPayload(payload, [asset], mismatch);
-    const serialized = JSON.stringify(result);
-    assert.doesNotMatch(serialized, /ms:\/\//);
-    assert.match(serialized, /Video attachment omitted/);
-    assert.match(serialized, /Keep this prompt/);
-  }
-
-  const matched = JSON.stringify(rewriteProviderPayload(payload, [asset], model));
-  assert.match(matched, /ms:\/\/file-1/);
-});
-
-test("rewrites text parts while preserving image and custom content parts", () => {
-  const image = { type: "image_url", image_url: { url: "data:image/png;base64,x" } };
-  const tool = { type: "tool_result", value: 7 };
-  const payload = { messages: [{ role: "user", content: [image, { type: "text", text: `${marker}\nPrompt` }, tool] }] };
-  const result = rewriteProviderPayload(payload, [asset], model) as { messages: Array<{ content: unknown[] }> };
-  assert.equal(result.messages[0]?.content[0], image);
-  assert.deepEqual(result.messages[0]?.content[1], { type: "video", source: { type: "url", url: asset.msUri } });
-  assert.equal(result.messages[0]?.content[3], tool);
-});
-
-test("reinjects every matching historical user message", () => {
-  const payload = { messages: [
-    { role: "user", content: `${marker}\nFirst` },
-    { role: "assistant", content: "answer" },
-    { role: "user", content: `${marker}\nSecond` },
-  ] };
-  const result = rewriteProviderPayload(payload, [asset], model) as { messages: Array<{ content: unknown }> };
-  assert.ok(Array.isArray(result.messages[0]?.content));
-  assert.ok(Array.isArray(result.messages[2]?.content));
-  assert.equal(result.messages[1]?.content, "answer");
-});
-
-test("leaves unknown markers and unknown payload shapes unchanged", () => {
-  const unknown = "[[pi-kimi-video:v1:00000000-0000-0000-0000-000000000000]]\nHello";
-  const payload = { messages: [{ role: "user", content: unknown }] };
-  assert.equal(rewriteProviderPayload(payload, [asset], model), payload);
-  const other = { input: "not chat completions" };
-  assert.equal(rewriteProviderPayload(other, [asset], model), other);
-});
-
-test("removes terminal control sequences and forces untrusted list values onto one line", () => {
-  const malicious = "safe\u001b]8;;https://evil.test\u0007link\u001b]8;;\u0007\nnext\u001b[31mred\u001b[0m\u009b2J";
-  const cleaned = sanitizeTerminalText(malicious);
-  assert.equal(cleaned, "safelink nextred");
-  assert.doesNotMatch(cleaned, /[\u0000-\u001F\u007F-\u009F]/);
-  assert.equal(singleLineTerminalText("file\nname\r\t.mp4"), "file name .mp4");
-});
-
-test("restores assets from read_video tool results", () => {
+test("validates and restores read_video assets", () => {
+  assert.equal(isVideoAsset(asset), true);
+  assert.equal(isVideoAsset({ ...asset, msUri: "https://wrong" }), false);
   const entries = [
     { type: "message", details: asset },
     { type: "message", message: { role: "toolResult", toolName: "read_video", details: asset } },
@@ -207,8 +78,16 @@ test("restores assets from read_video tool results", () => {
   assert.deepEqual(assetsFromBranch(entries), [asset]);
 });
 
-test("finds reusable uploads by provider, normalized base URL, and hash", () => {
+test("reuses uploads only for the same provider, endpoint, and hash", () => {
   assert.equal(findReusableAsset([asset], "kimi-coding", "https://api.kimi.com/coding/", "abc"), asset);
   assert.equal(findReusableAsset([asset], "other-provider", asset.baseUrl, "abc"), undefined);
   assert.equal(findReusableAsset([asset], "kimi-coding", asset.baseUrl, "different"), undefined);
+});
+
+test("sanitizes terminal-controlled file names and errors", () => {
+  const malicious = "safe\u001b]8;;https://evil.test\u0007link\u001b]8;;\u0007\nnext\u001b[31mred\u001b[0m\u009b2J";
+  const cleaned = sanitizeTerminalText(malicious);
+  assert.equal(cleaned, "safelink nextred");
+  assert.doesNotMatch(cleaned, /[\u0000-\u001F\u007F-\u009F]/);
+  assert.equal(singleLineTerminalText("file\nname\r\t.mp4"), "file name .mp4");
 });
