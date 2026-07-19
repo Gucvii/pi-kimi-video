@@ -135,6 +135,32 @@ test("injects video into an Anthropic tool_result produced by read_video", () =>
   });
 });
 
+test("restores a historical read_video result after switching away and back", () => {
+  const payload = { messages: [{
+    role: "user",
+    content: [{
+      type: "tool_result",
+      tool_use_id: "call-history",
+      content: [{ type: "text", text: `${marker}\nHistorical video` }],
+    }],
+  }] };
+
+  const fallback = JSON.stringify(rewriteProviderPayload(payload, [asset], {
+    provider: "text-provider",
+    id: "text-model",
+    baseUrl: "https://text.example/v1",
+  }));
+  assert.match(fallback, /Video attachment omitted/);
+  assert.doesNotMatch(fallback, /ms:\/\//);
+  assert.doesNotMatch(fallback, /pi-kimi-video/);
+  assert.match(JSON.stringify(payload), /pi-kimi-video/);
+
+  const restored = JSON.stringify(rewriteProviderPayload(payload, [asset], model));
+  assert.match(restored, /"type":"video"/);
+  assert.match(restored, /ms:\/\/file-1/);
+  assert.doesNotMatch(restored, /pi-kimi-video/);
+});
+
 test("uses safe text placeholders for non-Kimi models and never emits ms URI", () => {
   const payload = { messages: [{ role: "user", content: `${marker}\nExplain it` }] };
   const result = rewriteProviderPayload(payload, [asset], undefined);
